@@ -35,6 +35,16 @@ public class UndeliveredNotificationConsumer {
             groupId = "${spring.kafka.consumer.group-id}"
     )
     public void listenUndeliveredNotification(NotificationDTO notificationDTO) {
+                // Log the raw JSON received from Kafka (if possible)
+                // Note: Spring Kafka by default deserializes to NotificationDTO, so to log the raw JSON, you would need to use a custom deserializer or log at the Kafka config level.
+                // As a workaround, log the NotificationDTO as JSON to verify the structure as received.
+                try {
+                    com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();
+                    String notificationDtoJson = om.writeValueAsString(notificationDTO);
+                    log.info("[KAFKA-CONSUMER-JSON] NotificationDTO as received from Kafka: {}", notificationDtoJson);
+                } catch (Exception e) {
+                    log.warn("[KAFKA-CONSUMER-JSON] Failed to serialize NotificationDTO: {}", e.getMessage());
+                }
         log.info("=== Undelivered Notification Consumer Started ===");
         log.info("Received undelivered notification message from Kafka topic: {}",
                 ApplicationConstants.KAFKA_UNDELIVERED_NOTIFICATION_TOPIC);

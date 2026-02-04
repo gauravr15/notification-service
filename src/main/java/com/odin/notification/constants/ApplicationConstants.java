@@ -14,6 +14,7 @@ public class ApplicationConstants {
 	public static final String KAFKA_ALERT_NOTIFICATION_TOPIC = "alert.notification.message";
 	public static final String KAFKA_REMINDER_NOTIFICATION_TOPIC = "reminder.notification.message";
 	public static final String KAFKA_UNDELIVERED_NOTIFICATION_TOPIC = "undelivered.notification.message";
+	public static final String KAFKA_STATUS_UPDATE_NOTIFICATION_TOPIC = "status.update.notification.message";
 
 	// ===== Notification Type/ID Constants =====
 	public static final Long NOTIFICATION_ID_DIRECT_MESSAGE = 1L;
@@ -21,11 +22,20 @@ public class ApplicationConstants {
 	// ===== FCM Configuration Constants =====
 	public static final String FCM_NOTIFICATION_CHANNEL_ID = "odin_messenger_channel";
 	public static final String FCM_CLICK_ACTION = "FLUTTER_NOTIFICATION_CLICK";
+	public static final String FCM_CLICK_ACTION_NONE = "none";
 	public static final String FCM_EXTRA_INFO_KEY = "extra_info";
 	public static final String FCM_RECEIVER_MOBILE_KEY = "receiverMobile";
 	public static final String FCM_SENDER_MOBILE_KEY = "senderMobile";
+	public static final String FCM_SENDER_CUSTOMER_ID_KEY = "senderCustomerId";
 	public static final String FCM_MESSAGE_KEY = "message";
+	public static final String FCM_CONVERSATION_ID_KEY = "conversationId";
+	public static final String FCM_FILE_IDS_KEY = "fileIds";
 	public static final String FCM_CREDENTIAL_TYPE = "service_account";
+	public static final String FCM_NOTIFICATION_TYPE_CHAT = "CHAT_MESSAGE";
+	public static final String FCM_NOTIFICATION_TYPE_MESSAGE = "MESSAGE";
+	public static final String FCM_NOTIFICATION_TYPE_STATUS = "STATUS_UPDATE";
+	public static final String FCM_NOTIFICATION_SOUND_DEFAULT = "default";
+	public static final String FCM_NOTIFICATION_SOUND_NONE = "none";
 
 	// ===== Log Messages =====
 	public static final String LOG_UNDELIVERED_NOTIFICATION_RECEIVED = "Received undelivered notification with customerId: {}, notificationId: {}, channel: {}";
@@ -45,8 +55,18 @@ public class ApplicationConstants {
 	public static final String LOG_NOTIFICATION_PROCESSING_STARTED = "=== Notification Processing Started ===";
 	public static final String LOG_NOTIFICATION_PROCESSING_COMPLETED = "=== Notification Processing Completed ===";
 	public static final String LOG_ERROR_PROCESSING_NOTIFICATION = "Error processing notification for customerId: {}. Error: {}";
-
+	
+	// ===== Status Update Notification Log Messages =====
+	public static final String LOG_STATUS_UPDATE_NOTIFICATION_RECEIVED = "Received status update notification with customerId: {}, notificationId: {}, channel: {}";
+	public static final String LOG_STATUS_UPDATE_PROCESSING_STARTED = "=== Status Update Processing Started ===";
+	public static final String LOG_STATUS_UPDATE_PROCESSING_COMPLETED = "=== Status Update Processing Completed ===";
+	public static final String LOG_STATUS_UPDATE_SENDER_INFO = "Status update from sender: customerId={}, mobile={}";
+	public static final String LOG_SENDING_STATUS_UPDATE_NOTIFICATION = "Sending status update notification to token: {} with file count: {}";
+	public static final String LOG_STATUS_UPDATE_SENT_SUCCESSFULLY = "Status update notification sent successfully. Message ID: {}";
+	public static final String LOG_STATUS_UPDATE_FAILED = "Failed to send status update notification. Error: {}";
 
 }
+
+
 
 

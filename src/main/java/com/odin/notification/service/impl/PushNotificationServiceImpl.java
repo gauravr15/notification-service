@@ -95,6 +95,18 @@ public class PushNotificationServiceImpl implements PushNotificationService {
      */
     private void handleInAppNotification(NotificationDTO notificationDTO) {
         log.debug("Processing INAPP notification for customerId: {}", notificationDTO.getCustomerId());
+        if (notificationDTO.getMap() != null) {
+            log.info("[NOTIFY-CONSUMER-DEBUG] Received notification map from Kafka: {}", notificationDTO.getMap());
+            log.info("[NOTIFY-CONSUMER-DEBUG] conversationId={}, groupId={}", notificationDTO.getMap().get("conversationId"), notificationDTO.getMap().get("groupId"));
+            log.info(
+              "[KAFKA-ENTRY] dtoHash={} mapHash={} mapKeys={}",
+              System.identityHashCode(notificationDTO),
+              System.identityHashCode(notificationDTO.getMap()),
+              notificationDTO.getMap().keySet()
+            );
+        } else {
+            log.warn("[NOTIFY-CONSUMER-DEBUG] NotificationDTO map is null for customerId={}", notificationDTO.getCustomerId());
+        }
 
         // Check if this is a direct message (notificationId = 1)
         if (isDirectMessage(notificationDTO.getNotificationId())) {
@@ -104,8 +116,9 @@ public class PushNotificationServiceImpl implements PushNotificationService {
             // Extract message from map
             String message = extractMessageFromMap(notificationDTO.getMap());
 
-            if (message == null || message.isEmpty()) {
-                log.warn("No message found in notification map for customerId: {}",
+            // If it's not encrypted, we require a message. If it is encrypted, message can be empty.
+            if (!notificationDTO.isEncrypted() && (message == null || message.isEmpty())) {
+                log.warn("No message found in notification map for non-encrypted message, customerId: {}",
                         notificationDTO.getCustomerId());
                 return;
             }
@@ -169,13 +182,18 @@ public class PushNotificationServiceImpl implements PushNotificationService {
 
         // Build data map for FCM
         Map<String, String> fcmDataMap = buildFcmDataMap(notificationDTO);
+        if (fcmDataMap == null) {
+            log.warn("[FCM] Skipping push for customerId={} due to missing conversationId", notificationDTO.getCustomerId());
+            return;
+        }
 
-        // Send notification
-        String messageId = fcmUtil.sendPushNotification(
+        // Send data-only notification (no notification object)
+        // This allows the app to render the notification with sound and deep-link handling
+        // For messages, we use isSilent = false to set 'alert' type for APNs
+        String messageId = fcmUtil.sendDataOnlyPushNotification(
                 fcmToken,
-                "New Message",
-                message,
-                fcmDataMap
+                fcmDataMap,
+                false
         );
 
         if (messageId != null) {
@@ -195,11 +213,92 @@ public class PushNotificationServiceImpl implements PushNotificationService {
      * @return Map with FCM data
      */
     private Map<String, String> buildFcmDataMap(NotificationDTO notificationDTO) {
+                log.info(
+                  "[FCM-BUILD] dtoHash={} mapHash={} mapKeys={}",
+                  System.identityHashCode(notificationDTO),
+                  notificationDTO.getMap() != null
+                      ? System.identityHashCode(notificationDTO.getMap())
+                      : null,
+                  notificationDTO.getMap() != null
+                      ? notificationDTO.getMap().keySet()
+                      : null
+                );
         Map<String, String> fcmData = new HashMap<>();
 
-        if (notificationDTO.getMap() != null) {
-            // Add all data from notification map
-            fcmData.putAll(notificationDTO.getMap());
+        Map<String, Object> map = notificationDTO.getMap();
+        String conversationId = notificationDTO.getConversationId();
+        if (conversationId == null || conversationId.isEmpty()) {
+            log.warn("[FCM-BUILD] Missing conversationId for customerId={}", notificationDTO.getCustomerId());
+            return null;
+        }
+
+        String groupId =
+            map != null && map.get("groupId") != null
+                ? String.valueOf(map.get("groupId"))
+                : null;
+
+        Boolean isGroup =
+            map != null && map.get("isGroup") != null
+                ? Boolean.valueOf(String.valueOf(map.get("isGroup")))
+                : conversationId.startsWith("group:");
+
+        String groupName =
+            map != null && map.get("groupName") != null
+                ? String.valueOf(map.get("groupName"))
+                : null;
+
+        // Add all data from notification map, converting values to String
+        if (map != null) {
+            map.forEach((key, value) -> {
+                if (value != null) {
+                    if (value instanceof java.util.List) {
+                        String joined = ((java.util.List<?>) value).stream()
+                                .map(String::valueOf)
+                                .collect(java.util.stream.Collectors.joining(","));
+                        fcmData.put(key, joined);
+                    } else {
+                        fcmData.put(key, String.valueOf(value));
+                    }
+                }
+            });
+        }
+
+        // Use only resolved values for FCM payload
+        fcmData.put("conversationId", conversationId);
+        if (groupId != null) {
+            fcmData.put("groupId", groupId);
+        }
+        fcmData.put("isGroup", String.valueOf(isGroup));
+        if (groupName != null) {
+            fcmData.put("groupName", groupName);
+        }
+
+        log.info(
+          "[FCM-BUILD] conversationId={} groupId={} isGroup={} groupName={}",
+          conversationId, groupId, isGroup, groupName
+        );
+
+        // Add mandatory fields for data-only message rendering
+        fcmData.put("type", ApplicationConstants.FCM_NOTIFICATION_TYPE_MESSAGE);
+        fcmData.put("title", notificationDTO.getSenderName() != null ? notificationDTO.getSenderName() : "Odin Messenger");
+
+        // Handle body based strictly on payload encryption state (independent of any config)
+        if (notificationDTO.isEncrypted()) {
+            log.debug("Encrypted message detected for customerId: {}. Skipping body entirely.", notificationDTO.getCustomerId());
+            fcmData.remove("body");
+            fcmData.remove("message");
+            fcmData.remove("sampleMessage");
+        } else {
+            fcmData.put("body", notificationDTO.getMessage() != null ? notificationDTO.getMessage() : "New Message");
+        }
+
+        // Add sender and receiver info explicitly if available
+        if (notificationDTO.getSenderCustomerId() != null) {
+            fcmData.put(ApplicationConstants.FCM_SENDER_CUSTOMER_ID_KEY, notificationDTO.getSenderCustomerId());
+        }
+        if (notificationDTO.getSenderMobile() != null) {
+            fcmData.put(ApplicationConstants.FCM_SENDER_MOBILE_KEY, notificationDTO.getSenderMobile());
+            fcmData.put("senderPhone", notificationDTO.getSenderMobile());
         }
 
         // Add notification metadata
@@ -207,7 +306,7 @@ public class PushNotificationServiceImpl implements PushNotificationService {
         fcmData.put("notificationId", String.valueOf(notificationDTO.getNotificationId()));
         fcmData.put("channel", notificationDTO.getChannel().toString());
 
-        log.debug("Built FCM data map with {} entries", fcmData.size());
+        log.debug("Built FCM data-only map for MESSAGE with {} entries", fcmData.size());
         return fcmData;
     }
 
@@ -217,15 +316,18 @@ public class PushNotificationServiceImpl implements PushNotificationService {
      * @param dataMap The data map from notification
      * @return The message value or null if not found
      */
-    private String extractMessageFromMap(Map<String, String> dataMap) {
+    private String extractMessageFromMap(Map<String, Object> dataMap) {
         if (dataMap == null || dataMap.isEmpty()) {
             log.warn("Notification map is null or empty");
             return null;
         }
 
-        String message = dataMap.get(ApplicationConstants.FCM_MESSAGE_KEY);
+        Object message = dataMap.get(ApplicationConstants.FCM_MESSAGE_KEY);
+        if (message == null) {
+            message = dataMap.get("sampleMessage");
+        }
         log.debug("Extracted message from map: {}", message != null ? "Found" : "Not found");
-        return message;
+        return message != null ? String.valueOf(message) : null;
     }
 
     /**
