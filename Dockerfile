@@ -4,7 +4,6 @@ COPY target/notification-service-0.0.1-SNAPSHOT.jar .
 
 EXPOSE 9013
 
-# Spring profiles
 ENV SPRING_PROFILES_ACTIVE=jdbc,production
 
 # Disable Eureka registration/fetch
