@@ -1,6 +1,6 @@
 FROM openjdk:17-jdk
 WORKDIR /app
-COPY notification-service-0.0.1-SNAPSHOT.jar .
+COPY target/notification-service-0.0.1-SNAPSHOT.jar .
 
 EXPOSE 9013
 
@@ -8,13 +8,9 @@ EXPOSE 9013
 ENV SPRING_PROFILES_ACTIVE=jdbc,production
 
 # Disable Eureka registration/fetch
-ENV EUREKA_CLIENT_REGISTER_WITH_EUREKA=false
-ENV EUREKA_CLIENT_FETCH_REGISTRY=false
+#ENV EUREKA_CLIENT_REGISTER_WITH_EUREKA=false
+#ENV EUREKA_CLIENT_FETCH_REGISTRY=false
 
-# Datasource
-ENV SPRING_DATASOURCE_URL=jdbc:mariadb://mariadb-db:3306/middleware
-ENV SPRING_DATASOURCE_USERNAME=root
-ENV SPRING_DATASOURCE_PASSWORD=BR-10h8352
 
 # Disable all metrics to avoid cgroup crash
 ENV MANAGEMENT_METRICS_ENABLE_ALL=false
