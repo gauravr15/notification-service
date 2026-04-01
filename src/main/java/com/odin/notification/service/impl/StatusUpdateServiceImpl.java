@@ -188,6 +188,10 @@ public class StatusUpdateServiceImpl implements StatusUpdateService {
     private Map<String, String> buildStatusUpdateDataMap(NotificationDTO notificationDTO) {
         Map<String, String> fcmData = new HashMap<>();
 
+        // Detect if this is a STATUS_DELETE signal from the map
+        boolean isDeleteSignal = notificationDTO.getMap() != null
+                && "STATUS_DELETE".equals(notificationDTO.getMap().get("statusDeleteSignal"));
+
         // Add sender information
         if (notificationDTO.getSenderMobile() != null) {
             String mobile = notificationDTO.getSenderMobile();
@@ -205,12 +209,17 @@ public class StatusUpdateServiceImpl implements StatusUpdateService {
             fcmData.put(ApplicationConstants.FCM_FILE_IDS_KEY, notificationDTO.getFileIds());
         }
 
-        // Add notification metadata
-        fcmData.put("type", ApplicationConstants.FCM_NOTIFICATION_TYPE_STATUS);
+        // Set type based on whether this is a delete or an upload notification
+        if (isDeleteSignal) {
+            fcmData.put("type", ApplicationConstants.FCM_NOTIFICATION_TYPE_STATUS_DELETE);
+            log.info("[STATUS-DELETE] Building FCM data for status deletion. customerId={}", notificationDTO.getCustomerId());
+        } else {
+            fcmData.put("type", ApplicationConstants.FCM_NOTIFICATION_TYPE_STATUS);
+        }
         fcmData.put("sound", ApplicationConstants.FCM_NOTIFICATION_SOUND_NONE);
         fcmData.put("badge", "1");
 
-        log.debug("Built FCM data map for status update with {} entries", fcmData.size());
+        log.debug("Built FCM data map for status {} with {} entries", isDeleteSignal ? "delete" : "update", fcmData.size());
         return fcmData;
     }
 

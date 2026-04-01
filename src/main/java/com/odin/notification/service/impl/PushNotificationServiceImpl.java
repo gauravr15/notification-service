@@ -5,6 +5,11 @@ import java.util.Map;
 import java.util.Optional;
 
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import com.odin.notification.constants.ApplicationConstants;
 import com.odin.notification.dto.NotificationDTO;
@@ -26,10 +31,15 @@ public class PushNotificationServiceImpl implements PushNotificationService {
 
     private final FcmUtil fcmUtil;
     private final NotificationTokenRepository notificationTokenRepository;
+    private final Fast2SmsOtpService fast2SmsOtpService;
+    private static final String CALL_INVITE_TYPE = "CALL_INVITE";
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public PushNotificationServiceImpl(FcmUtil fcmUtil, NotificationTokenRepository notificationTokenRepository) {
+    public PushNotificationServiceImpl(FcmUtil fcmUtil, NotificationTokenRepository notificationTokenRepository,
+                                       Fast2SmsOtpService fast2SmsOtpService) {
         this.fcmUtil = fcmUtil;
         this.notificationTokenRepository = notificationTokenRepository;
+        this.fast2SmsOtpService = fast2SmsOtpService;
     }
 
     @Override
@@ -152,9 +162,23 @@ public class PushNotificationServiceImpl implements PushNotificationService {
      */
     private void handleSmsNotification(NotificationDTO notificationDTO) {
         log.debug("Processing SMS notification for customerId: {}", notificationDTO.getCustomerId());
-        // TODO: Implement SMS sending logic
-        log.info("SMS notification handling not yet implemented for customerId: {}",
-                notificationDTO.getCustomerId());
+
+        String mobile = notificationDTO.getMobile();
+        String otp = notificationDTO.getMap() != null
+                ? String.valueOf(notificationDTO.getMap().get("otp"))
+                : null;
+
+        if (mobile == null || mobile.isBlank() || otp == null || "null".equals(otp)) {
+            log.warn(ApplicationConstants.LOG_SMS_OTP_MISSING_DATA, mobile, otp != null);
+            return;
+        }
+
+        boolean sent = fast2SmsOtpService.sendOtp(mobile, otp);
+        if (sent) {
+            log.info(ApplicationConstants.LOG_SMS_OTP_SENT_SUCCESS, mobile);
+        } else {
+            log.warn(ApplicationConstants.LOG_SMS_OTP_SENT_FAILURE, mobile);
+        }
     }
 
     /**
@@ -247,39 +271,56 @@ public class PushNotificationServiceImpl implements PushNotificationService {
                 ? String.valueOf(map.get("groupName"))
                 : null;
 
-        // Add all data from notification map, converting values to String
+        // Add all notification map entries, preserving structured payloads for CALL_INVITE
         if (map != null) {
             map.forEach((key, value) -> {
-                if (value != null) {
-                    if (value instanceof java.util.List) {
-                        String joined = ((java.util.List<?>) value).stream()
-                                .map(String::valueOf)
-                                .collect(java.util.stream.Collectors.joining(","));
-                        fcmData.put(key, joined);
-                    } else {
-                        fcmData.put(key, String.valueOf(value));
-                    }
+                if (value == null) {
+                    return;
+                }
+                if (value instanceof java.util.List) {
+                    String joined = ((java.util.List<?>) value).stream()
+                            .map(String::valueOf)
+                            .collect(java.util.stream.Collectors.joining(","));
+                    fcmData.put(key, joined);
+                } else if (value instanceof Map || value instanceof JsonNode) {
+                    fcmData.put(key, toJsonString(key, value));
+                } else {
+                    fcmData.put(key, String.valueOf(value));
                 }
             });
         }
 
         // Use only resolved values for FCM payload
-        fcmData.put("conversationId", conversationId);
+        fcmData.putIfAbsent("conversationId", conversationId);
         if (groupId != null) {
-            fcmData.put("groupId", groupId);
+            fcmData.putIfAbsent("groupId", groupId);
         }
-        fcmData.put("isGroup", String.valueOf(isGroup));
+        fcmData.putIfAbsent("isGroup", String.valueOf(isGroup));
         if (groupName != null) {
-            fcmData.put("groupName", groupName);
+            fcmData.putIfAbsent("groupName", groupName);
         }
 
         log.info(
-          "[FCM-BUILD] conversationId={} groupId={} isGroup={} groupName={}",
-          conversationId, groupId, isGroup, groupName
+            "[FCM-BUILD] conversationId={} groupId={} isGroup={} groupName={}",
+            conversationId, groupId, isGroup, groupName
         );
 
         // Add mandatory fields for data-only message rendering
-        fcmData.put("type", ApplicationConstants.FCM_NOTIFICATION_TYPE_MESSAGE);
+        String resolvedType = ApplicationConstants.FCM_NOTIFICATION_TYPE_MESSAGE;
+        if (map != null && map.get("type") != null) {
+            String candidate = String.valueOf(map.get("type"));
+            if (StringUtils.hasText(candidate)) {
+                resolvedType = candidate;
+            }
+        }
+        String signal = map != null && map.get("signal") != null
+                ? String.valueOf(map.get("signal"))
+                : null;
+        if (CALL_INVITE_TYPE.equalsIgnoreCase(signal)) {
+            resolvedType = CALL_INVITE_TYPE;
+        }
+        boolean isCallInvite = CALL_INVITE_TYPE.equalsIgnoreCase(resolvedType);
+        fcmData.put("type", resolvedType);
         fcmData.put("title", notificationDTO.getSenderName() != null ? notificationDTO.getSenderName() : "Odin Messenger");
 
         // Handle body based strictly on payload encryption state (independent of any config)
@@ -307,6 +348,20 @@ public class PushNotificationServiceImpl implements PushNotificationService {
         fcmData.put("channel", notificationDTO.getChannel().toString());
 
         log.debug("Built FCM data-only map for MESSAGE with {} entries", fcmData.size());
+        if (isCallInvite) {
+            log.info("CALL_INVITE FCM STRUCTURE: {}", fcmData);
+            try {
+                log.info("========== BACKEND FINAL FCM DATA ==========");
+                log.info("{}", objectMapper.writeValueAsString(fcmData));
+                log.info("============================================");
+            } catch (Exception e) {
+                log.error("Failed to serialize FCM data map for logging", e);
+            }
+        }
+        log.info("FINAL FCM DATA PAYLOAD: {}", fcmData);
+        log.info("========== FINAL FCM DATA MAP ==========");
+        log.info("{}", fcmData);
+        log.info("========================================");
         return fcmData;
     }
 
@@ -328,6 +383,15 @@ public class PushNotificationServiceImpl implements PushNotificationService {
         }
         log.debug("Extracted message from map: {}", message != null ? "Found" : "Not found");
         return message != null ? String.valueOf(message) : null;
+    }
+
+    private String toJsonString(String key, Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (JsonProcessingException e) {
+            log.warn("[FCM] Failed to serialize {} field for FCM payload: {}", key, e.getMessage());
+            return String.valueOf(value);
+        }
     }
 
     /**

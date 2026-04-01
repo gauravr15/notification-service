@@ -196,17 +196,19 @@ public class FcmUtil {
                             .build())
                     .build();
 
+            Map<String, String> sanitizedData = sanitizeReservedKeys(dataMap);
+
             // Build message without notification object
             Message message = Message.builder()
                     .setToken(token)
-                    .putAllData(dataMap)
+                    .putAllData(sanitizedData)
                     .setAndroidConfig(androidConfig)
                     .setApnsConfig(apnsConfig)
                     .build();
 
             // Log sanitized payload for security
-            log.info("FINAL DATA-ONLY FCM PAYLOAD (isSilent: {}) for token {}: {}", 
-                    isSilent, token, sanitizeDataMap(dataMap));
+            log.info("FINAL DATA-ONLY FCM PAYLOAD (isSilent: {}) for token {}: {}",
+                    isSilent, token, sanitizeDataMap(sanitizedData));
 
             // Send message
             String messageId = firebaseMessaging.send(message);
@@ -255,6 +257,22 @@ public class FcmUtil {
             }
         }
         
+        return sanitized;
+    }
+
+    private Map<String, String> sanitizeReservedKeys(Map<String, String> dataMap) {
+        Map<String, String> sanitized = new HashMap<>();
+        if (dataMap != null) {
+            sanitized.putAll(dataMap);
+        }
+
+        if (sanitized.containsKey("from")) {
+            sanitized.put("callerId", sanitized.get("from"));
+            sanitized.remove("from");
+        }
+
+        sanitized.keySet().removeIf(key -> key.startsWith("google.") || key.startsWith("gcm."));
+
         return sanitized;
     }
 

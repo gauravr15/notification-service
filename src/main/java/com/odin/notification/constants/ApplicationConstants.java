@@ -34,6 +34,7 @@ public class ApplicationConstants {
 	public static final String FCM_NOTIFICATION_TYPE_CHAT = "CHAT_MESSAGE";
 	public static final String FCM_NOTIFICATION_TYPE_MESSAGE = "MESSAGE";
 	public static final String FCM_NOTIFICATION_TYPE_STATUS = "STATUS_UPDATE";
+	public static final String FCM_NOTIFICATION_TYPE_STATUS_DELETE = "STATUS_DELETE";
 	public static final String FCM_NOTIFICATION_SOUND_DEFAULT = "default";
 	public static final String FCM_NOTIFICATION_SOUND_NONE = "none";
 
@@ -64,6 +65,12 @@ public class ApplicationConstants {
 	public static final String LOG_SENDING_STATUS_UPDATE_NOTIFICATION = "Sending status update notification to token: {} with file count: {}";
 	public static final String LOG_STATUS_UPDATE_SENT_SUCCESSFULLY = "Status update notification sent successfully. Message ID: {}";
 	public static final String LOG_STATUS_UPDATE_FAILED = "Failed to send status update notification. Error: {}";
+
+	// ===== SMS OTP Log Messages =====
+	public static final String LOG_SMS_OTP_RECEIVED = "Received OTP SMS request for mobile: {}";
+	public static final String LOG_SMS_OTP_MISSING_DATA = "OTP SMS request missing required data — mobile: {}, otp present: {}";
+	public static final String LOG_SMS_OTP_SENT_SUCCESS = "OTP SMS sent successfully to mobile: {}";
+	public static final String LOG_SMS_OTP_SENT_FAILURE = "OTP SMS sending failed for mobile: {}";
 
 }
 
