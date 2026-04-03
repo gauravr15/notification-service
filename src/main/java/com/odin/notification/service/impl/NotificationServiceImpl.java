@@ -30,11 +30,13 @@ public class NotificationServiceImpl implements NotificationService {
 	public ResponseDTO save(NotificationTokenDTO notificationServ) {
 		try {
 			NotificationToken obj = null;
-			Optional<NotificationToken> exists = repo.findFirstByCustomerIdAndDeviceSignature(
-					notificationServ.getCustomerId(), notificationServ.getDeviceSignature());
+			Optional<NotificationToken> exists = repo.findFirstByCustomerId(
+					notificationServ.getCustomerId());
 			if (exists.isPresent()) {
 				obj = exists.get();
 				obj.setFcmToken(notificationServ.getFcmToken());
+				obj.setDeviceSignature(notificationServ.getDeviceSignature());
+				obj.setUpdateTimestamp(new java.sql.Timestamp(System.currentTimeMillis()));
 			} else {
 				obj = mapper.readValue(mapper.writeValueAsString(notificationServ), NotificationToken.class);
 			}
