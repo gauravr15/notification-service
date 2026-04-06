@@ -165,17 +165,17 @@ public class StatusUpdateServiceImpl implements StatusUpdateService {
         // Send data-only notification (no notification object) for status updates
         // This allows the frontend to process it in the background even when locked.
         // For status updates, we use isSilent = true to set 'background' type for APNs
-        String messageId = fcmUtil.sendDataOnlyPushNotification(
-                fcmToken,
-                fcmDataMap,
-                true
-        );
+        try {
+            String messageId = fcmUtil.sendDataOnlyPushNotification(
+                    fcmToken,
+                    fcmDataMap,
+                    true
+            );
 
-        if (messageId != null) {
             log.info(ApplicationConstants.LOG_STATUS_UPDATE_SENT_SUCCESSFULLY, messageId);
-        } else {
+        } catch (Exception e) {
             log.error(ApplicationConstants.LOG_STATUS_UPDATE_FAILED,
-                    notificationDTO.getCustomerId());
+                    notificationDTO.getCustomerId(), e);
         }
     }
 

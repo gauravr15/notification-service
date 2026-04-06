@@ -176,53 +176,45 @@ public class FcmUtil {
      *                 or an alert notification (MESSAGE)
      * @return Message ID if successful, null otherwise
      */
-    public String sendDataOnlyPushNotification(String token, Map<String, String> dataMap, boolean isSilent) {
+    public String sendDataOnlyPushNotification(String token, Map<String, String> dataMap, boolean isSilent)
+            throws FirebaseMessagingException {
         log.debug("Preparing to send data-only FCM push notification to token: {}, isSilent: {}", token, isSilent);
 
-        try {
-            // Build Android-specific configuration with HIGH priority to wake the device
-            AndroidConfig androidConfig = AndroidConfig.builder()
-                    .setPriority(AndroidConfig.Priority.HIGH)
-                    .build();
+        // Build Android-specific configuration with HIGH priority to wake the device
+        AndroidConfig androidConfig = AndroidConfig.builder()
+                .setPriority(AndroidConfig.Priority.HIGH)
+                .build();
 
-            // Build APNS-specific configuration
-            // isSilent = false (MESSAGE): alert type, priority 10, content-available 1
-            // isSilent = true (STATUS_UPDATE): background type, priority 5, content-available 1
-            ApnsConfig apnsConfig = ApnsConfig.builder()
-                    .putHeader("apns-push-type", isSilent ? "background" : "alert")
-                    .putHeader("apns-priority", isSilent ? "5" : "10")
-                    .setAps(Aps.builder()
-                            .setContentAvailable(true)
-                            .build())
-                    .build();
+        // Build APNS-specific configuration
+        // isSilent = false (MESSAGE): alert type, priority 10, content-available 1
+        // isSilent = true (STATUS_UPDATE): background type, priority 5, content-available 1
+        ApnsConfig apnsConfig = ApnsConfig.builder()
+                .putHeader("apns-push-type", isSilent ? "background" : "alert")
+                .putHeader("apns-priority", isSilent ? "5" : "10")
+                .setAps(Aps.builder()
+                        .setContentAvailable(true)
+                        .build())
+                .build();
 
-            Map<String, String> sanitizedData = sanitizeReservedKeys(dataMap);
+        Map<String, String> sanitizedData = sanitizeReservedKeys(dataMap);
 
-            // Build message without notification object
-            Message message = Message.builder()
-                    .setToken(token)
-                    .putAllData(sanitizedData)
-                    .setAndroidConfig(androidConfig)
-                    .setApnsConfig(apnsConfig)
-                    .build();
+        // Build message without notification object
+        Message message = Message.builder()
+                .setToken(token)
+                .putAllData(sanitizedData)
+                .setAndroidConfig(androidConfig)
+                .setApnsConfig(apnsConfig)
+                .build();
 
-            // Log sanitized payload for security
-            log.info("FINAL DATA-ONLY FCM PAYLOAD (isSilent: {}) for token {}: {}",
-                    isSilent, token, sanitizeDataMap(sanitizedData));
+        // Log sanitized payload for security
+        log.info("FINAL DATA-ONLY FCM PAYLOAD (isSilent: {}) for token {}: {}",
+                isSilent, token, sanitizeDataMap(sanitizedData));
 
-            // Send message
-            String messageId = firebaseMessaging.send(message);
+        // Send message — let exceptions propagate for caller retry handling
+        String messageId = firebaseMessaging.send(message);
 
-            log.info(ApplicationConstants.LOG_FCM_PUSH_SENT_SUCCESSFULLY, messageId);
-            return messageId;
-
-        } catch (FirebaseMessagingException e) {
-            log.error(ApplicationConstants.LOG_FCM_PUSH_FAILED, e.getMessage(), e);
-            return null;
-        } catch (Exception e) {
-            log.error("Unexpected error while sending data-only FCM notification: {}", e.getMessage(), e);
-            return null;
-        }
+        log.info(ApplicationConstants.LOG_FCM_PUSH_SENT_SUCCESSFULLY, messageId);
+        return messageId;
     }
 
     /**

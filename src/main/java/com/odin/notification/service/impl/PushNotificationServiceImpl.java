@@ -3,13 +3,19 @@ package com.odin.notification.service.impl;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+
+import com.google.firebase.messaging.FirebaseMessagingException;
+import com.google.firebase.messaging.MessagingErrorCode;
 
 import com.odin.notification.constants.ApplicationConstants;
 import com.odin.notification.dto.NotificationDTO;
@@ -32,14 +38,46 @@ public class PushNotificationServiceImpl implements PushNotificationService {
     private final FcmUtil fcmUtil;
     private final NotificationTokenRepository notificationTokenRepository;
     private final Fast2SmsOtpService fast2SmsOtpService;
+    private final KafkaTemplate<String, NotificationDTO> kafkaTemplate;
     private static final String CALL_INVITE_TYPE = "CALL_INVITE";
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    // Non-retryable FCM error codes — retrying these would never succeed
+    private static final Set<MessagingErrorCode> NON_RETRYABLE_ERRORS = Set.of(
+            MessagingErrorCode.INVALID_ARGUMENT,
+            MessagingErrorCode.UNREGISTERED,
+            MessagingErrorCode.SENDER_ID_MISMATCH,
+            MessagingErrorCode.THIRD_PARTY_AUTH_ERROR
+    );
+
+    @Value("${fcm.retry.enabled:true}")
+    private boolean fcmRetryEnabled;
+
+    @Value("${fcm.retry.max.attempts:3}")
+    private int fcmRetryMaxAttempts;
+
+    @Value("${fcm.retry.initial.backoff.ms:1000}")
+    private long fcmRetryInitialBackoffMs;
+
+    @Value("${fcm.retry.backoff.multiplier:2.0}")
+    private double fcmRetryBackoffMultiplier;
+
+    @Value("${fcm.retry.max.backoff.ms:30000}")
+    private long fcmRetryMaxBackoffMs;
+
+    @Value("${fcm.failure.kafka.topic:fcm-failure-undelivered-messages}")
+    private String fcmFailureKafkaTopic;
+
+    @Value("${fcm.failure.kafka.publish.enabled:true}")
+    private boolean fcmFailureKafkaPublishEnabled;
+
     public PushNotificationServiceImpl(FcmUtil fcmUtil, NotificationTokenRepository notificationTokenRepository,
-                                       Fast2SmsOtpService fast2SmsOtpService) {
+                                       Fast2SmsOtpService fast2SmsOtpService,
+                                       KafkaTemplate<String, NotificationDTO> kafkaTemplate) {
         this.fcmUtil = fcmUtil;
         this.notificationTokenRepository = notificationTokenRepository;
         this.fast2SmsOtpService = fast2SmsOtpService;
+        this.kafkaTemplate = kafkaTemplate;
     }
 
     @Override
@@ -197,6 +235,7 @@ public class PushNotificationServiceImpl implements PushNotificationService {
 
         if (fcmToken == null || fcmToken.isEmpty()) {
             log.error(ApplicationConstants.LOG_FCM_TOKEN_NOT_FOUND, notificationDTO.getCustomerId());
+            publishToFcmFailureTopic(notificationDTO, "FCM_TOKEN_NOT_FOUND");
             return;
         }
 
@@ -211,22 +250,126 @@ public class PushNotificationServiceImpl implements PushNotificationService {
             return;
         }
 
-        // Send data-only notification (no notification object)
-        // This allows the app to render the notification with sound and deep-link handling
-        // For messages, we use isSilent = false to set 'alert' type for APNs
-        String messageId = fcmUtil.sendDataOnlyPushNotification(
-                fcmToken,
-                fcmDataMap,
-                false
-        );
-
-        if (messageId != null) {
-            log.info("Push notification sent successfully for customerId: {}, messageId: {}",
-                    notificationDTO.getCustomerId(),
-                    messageId);
+        // Attempt FCM send with retry
+        if (fcmRetryEnabled) {
+            sendWithRetry(notificationDTO, fcmToken, fcmDataMap);
         } else {
-            log.error("Failed to send push notification for customerId: {}",
-                    notificationDTO.getCustomerId());
+            sendOnce(notificationDTO, fcmToken, fcmDataMap);
+        }
+    }
+
+    /**
+     * Send FCM with configurable retry and exponential backoff.
+     * On terminal failure (retries exhausted or non-retryable error), publishes to Kafka fallback topic.
+     */
+    private void sendWithRetry(NotificationDTO notificationDTO, String fcmToken, Map<String, String> fcmDataMap) {
+        long backoffMs = fcmRetryInitialBackoffMs;
+
+        for (int attempt = 1; attempt <= fcmRetryMaxAttempts; attempt++) {
+            try {
+                String messageId = fcmUtil.sendDataOnlyPushNotification(fcmToken, fcmDataMap, false);
+                log.info("[FCM-RETRY] Push sent successfully for customerId={}, attempt={}/{}, messageId={}",
+                        notificationDTO.getCustomerId(), attempt, fcmRetryMaxAttempts, messageId);
+                return; // Success — exit
+
+            } catch (FirebaseMessagingException e) {
+                MessagingErrorCode errorCode = e.getMessagingErrorCode();
+                log.warn("[FCM-RETRY] Attempt {}/{} failed for customerId={}, errorCode={}, message={}",
+                        attempt, fcmRetryMaxAttempts, notificationDTO.getCustomerId(), errorCode, e.getMessage());
+
+                // Non-retryable errors — don't waste time retrying
+                if (errorCode != null && NON_RETRYABLE_ERRORS.contains(errorCode)) {
+                    log.error("[FCM-RETRY] Non-retryable error {} for customerId={}, publishing to fallback",
+                            errorCode, notificationDTO.getCustomerId());
+                    publishToFcmFailureTopic(notificationDTO,
+                            "NON_RETRYABLE:" + errorCode.name());
+                    return;
+                }
+
+                // Last attempt — publish to fallback
+                if (attempt == fcmRetryMaxAttempts) {
+                    log.error("[FCM-RETRY] All {} attempts exhausted for customerId={}, publishing to fallback",
+                            fcmRetryMaxAttempts, notificationDTO.getCustomerId());
+                    publishToFcmFailureTopic(notificationDTO,
+                            "RETRIES_EXHAUSTED:" + (errorCode != null ? errorCode.name() : "UNKNOWN"));
+                    return;
+                }
+
+                // Backoff before next attempt
+                sleep(backoffMs);
+                backoffMs = Math.min((long) (backoffMs * fcmRetryBackoffMultiplier), fcmRetryMaxBackoffMs);
+
+            } catch (Exception e) {
+                log.error("[FCM-RETRY] Unexpected error on attempt {}/{} for customerId={}: {}",
+                        attempt, fcmRetryMaxAttempts, notificationDTO.getCustomerId(), e.getMessage(), e);
+
+                if (attempt == fcmRetryMaxAttempts) {
+                    publishToFcmFailureTopic(notificationDTO, "UNEXPECTED_ERROR");
+                    return;
+                }
+
+                sleep(backoffMs);
+                backoffMs = Math.min((long) (backoffMs * fcmRetryBackoffMultiplier), fcmRetryMaxBackoffMs);
+            }
+        }
+    }
+
+    /**
+     * Single FCM attempt (retry disabled). On failure, publishes to Kafka fallback topic.
+     */
+    private void sendOnce(NotificationDTO notificationDTO, String fcmToken, Map<String, String> fcmDataMap) {
+        try {
+            String messageId = fcmUtil.sendDataOnlyPushNotification(fcmToken, fcmDataMap, false);
+            log.info("Push notification sent successfully for customerId: {}, messageId: {}",
+                    notificationDTO.getCustomerId(), messageId);
+        } catch (FirebaseMessagingException e) {
+            log.error("Failed to send push notification for customerId: {}, error: {}",
+                    notificationDTO.getCustomerId(), e.getMessage(), e);
+            publishToFcmFailureTopic(notificationDTO,
+                    "FCM_ERROR:" + (e.getMessagingErrorCode() != null ? e.getMessagingErrorCode().name() : "UNKNOWN"));
+        } catch (Exception e) {
+            log.error("Unexpected error sending push notification for customerId: {}: {}",
+                    notificationDTO.getCustomerId(), e.getMessage(), e);
+            publishToFcmFailureTopic(notificationDTO, "UNEXPECTED_ERROR");
+        }
+    }
+
+    /**
+     * Publish the original NotificationDTO to the FCM failure Kafka topic.
+     * The websocket-service consumer will pick this up and store the message in Redis
+     * as an undelivered message, ensuring the user gets it on next login.
+     */
+    private void publishToFcmFailureTopic(NotificationDTO notificationDTO, String failureReason) {
+        if (!fcmFailureKafkaPublishEnabled) {
+            log.info("[FCM-FALLBACK] Kafka publish disabled, skipping for customerId={}", notificationDTO.getCustomerId());
+            return;
+        }
+
+        try {
+            // Add failure metadata to the map so consumer can log/audit
+            if (notificationDTO.getMap() != null) {
+                notificationDTO.getMap().put("fcmFailureReason", failureReason);
+            }
+
+            String kafkaKey = "fcm-failure:" + notificationDTO.getCustomerId();
+            kafkaTemplate.send(fcmFailureKafkaTopic, kafkaKey, notificationDTO);
+
+            log.info("[FCM-FALLBACK] Published to topic={} for customerId={}, reason={}",
+                    fcmFailureKafkaTopic, notificationDTO.getCustomerId(), failureReason);
+        } catch (Exception e) {
+            // Critical: Kafka publish failed too. Log prominently but message is still safe in Redis.
+            log.error("[FCM-FALLBACK-CRITICAL] Failed to publish to Kafka for customerId={}, reason={}: {}. " +
+                            "Message is still available in Redis undelivered store.",
+                    notificationDTO.getCustomerId(), failureReason, e.getMessage(), e);
+        }
+    }
+
+    private void sleep(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            log.warn("[FCM-RETRY] Retry sleep interrupted");
         }
     }
 
