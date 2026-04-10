@@ -15,6 +15,7 @@ public class ApplicationConstants {
 	public static final String KAFKA_REMINDER_NOTIFICATION_TOPIC = "reminder.notification.message";
 	public static final String KAFKA_UNDELIVERED_NOTIFICATION_TOPIC = "undelivered.notification.message";
 	public static final String KAFKA_STATUS_UPDATE_NOTIFICATION_TOPIC = "status.update.notification.message";
+	public static final String KAFKA_PROFILE_PHOTO_UPDATE_TOPIC = "profile-image-updates";
 
 	// ===== Notification Type/ID Constants =====
 	public static final Long NOTIFICATION_ID_DIRECT_MESSAGE = 1L;
@@ -35,6 +36,7 @@ public class ApplicationConstants {
 	public static final String FCM_NOTIFICATION_TYPE_MESSAGE = "MESSAGE";
 	public static final String FCM_NOTIFICATION_TYPE_STATUS = "STATUS_UPDATE";
 	public static final String FCM_NOTIFICATION_TYPE_STATUS_DELETE = "STATUS_DELETE";
+	public static final String FCM_NOTIFICATION_TYPE_PROFILE_PHOTO_UPDATE = "PROFILE_PHOTO_UPDATED";
 	public static final String FCM_NOTIFICATION_SOUND_DEFAULT = "default";
 	public static final String FCM_NOTIFICATION_SOUND_NONE = "none";
 
