@@ -1,6 +1,6 @@
 package com.odin.notification.service;
 
-import java.util.Map;
+import com.odin.notification.dto.PrivacyVisibilityChangeEvent;
 
 /**
  * Privacy Visibility Change Service Interface
@@ -11,7 +11,7 @@ public interface PrivacyVisibilityChangeService {
     /**
      * Process privacy visibility change event and send FCM notifications
      * 
-     * @param event The event data with userId, action, contactCount, etc.
+     * @param event The privacy visibility change event with user, privacy levels, and contacts
      */
-    void processPrivacyVisibilityChange(Map<String, Object> event);
+    void processPrivacyVisibilityChange(PrivacyVisibilityChangeEvent event);
 }

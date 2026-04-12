@@ -15,6 +15,7 @@ import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.support.serializer.JsonDeserializer;
 
 import com.odin.notification.dto.NotificationDTO;
+import com.odin.notification.dto.PrivacyVisibilityChangeEvent;
 
 
 @EnableKafka
@@ -53,6 +54,36 @@ public class KafkaConsumerConfig {
         ConcurrentKafkaListenerContainerFactory<String, NotificationDTO> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory());
+        return factory;
+    }
+
+    /**
+     * Consumer factory specifically for PrivacyVisibilityChangeEvent deserialization.
+     * This separate factory ensures privacy change events are properly deserialized
+     * instead of being converted to NotificationDTO.
+     */
+    @Bean
+    public ConsumerFactory<String, PrivacyVisibilityChangeEvent> privacyVisibilityChangeConsumerFactory() {
+        Map<String, Object> props = new HashMap<>();
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, groupId);
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, JsonDeserializer.class);
+        props.put(JsonDeserializer.VALUE_DEFAULT_TYPE, PrivacyVisibilityChangeEvent.class.getName());
+        props.put(JsonDeserializer.TRUSTED_PACKAGES, trustedPackages);
+        return new DefaultKafkaConsumerFactory<>(props);
+    }
+
+    /**
+     * Listener container factory for privacy visibility change events.
+     * Must be explicitly used by @KafkaListener for privacy-visibility-updates topic.
+     */
+    @Bean("privacyVisibilityChangeListenerFactory")
+    public ConcurrentKafkaListenerContainerFactory<String, PrivacyVisibilityChangeEvent>
+    privacyVisibilityChangeListenerFactory() {
+        ConcurrentKafkaListenerContainerFactory<String, PrivacyVisibilityChangeEvent> factory =
+                new ConcurrentKafkaListenerContainerFactory<>();
+        factory.setConsumerFactory(privacyVisibilityChangeConsumerFactory());
         return factory;
     }
 }

@@ -5,6 +5,7 @@ import org.springframework.stereotype.Component;
 
 import com.odin.notification.constants.ApplicationConstants;
 import com.odin.notification.dto.NotificationDTO;
+import com.odin.notification.dto.PrivacyVisibilityChangeEvent;
 import com.odin.notification.service.PrivacyVisibilityChangeService;
 
 import lombok.extern.slf4j.Slf4j;
@@ -28,17 +29,17 @@ public class PrivacyVisibilityChangeConsumer {
 
     @KafkaListener(
             topics = "privacy-visibility-updates",
-            groupId = "${spring.kafka.consumer.group-id}"
+            groupId = "${spring.kafka.consumer.group-id}",
+            containerFactory = "privacyVisibilityChangeListenerFactory"
     )
-    public void listenPrivacyVisibilityChange(Map<String, Object> event) {
+    public void listenPrivacyVisibilityChange(PrivacyVisibilityChangeEvent event) {
         log.info("=== Privacy Visibility Change Consumer Started ===");
         
-        String userId = event.get("userId") != null ? event.get("userId").toString() : "UNKNOWN";
-        String action = event.get("action") != null ? event.get("action").toString() : "UNKNOWN";
-        int contactCount = event.get("contactCount") != null ? (Integer) event.get("contactCount") : 0;
+        String userId = event.getUserId() != null ? event.getUserId() : "UNKNOWN";
+        int contactCount = event.getEligibleContactIds() != null ? event.getEligibleContactIds().size() : 0;
         
-        log.info("[PRIVACY-CONSUMER] 📥 Received privacy change event: userId={}, action={}, contacts={}, timestamp={}",
-                userId, action, contactCount, event.get("timestamp"));
+        log.info("[PRIVACY-CONSUMER] 📥 Received privacy change event: userId={}, photo={}, lastSeen={}, contacts={}, timestamp={}",
+                userId, event.getPhotoPrivacy(), event.getLastSeenPrivacy(), contactCount, event.getTimestamp());
 
         try {
             privacyVisibilityChangeService.processPrivacyVisibilityChange(event);

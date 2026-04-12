@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 
 import com.odin.notification.constants.ApplicationConstants;
 import com.odin.notification.dto.NotificationDTO;
+import com.odin.notification.dto.PrivacyVisibilityChangeEvent;
 import com.odin.notification.entity.NotificationToken;
 import com.odin.notification.enums.NotificationChannel;
 import com.odin.notification.repo.NotificationTokenRepository;
@@ -36,24 +37,22 @@ public class PrivacyVisibilityChangeServiceImpl implements PrivacyVisibilityChan
     }
 
     @Override
-    public void processPrivacyVisibilityChange(Map<String, Object> event) {
+    public void processPrivacyVisibilityChange(PrivacyVisibilityChangeEvent event) {
         log.info("[PRIVACY-SERVICE] 🔒 Processing privacy visibility change event");
         
-        String userId = event.get("userId") != null ? event.get("userId").toString() : null;
-        String action = event.get("action") != null ? event.get("action").toString() : null;
-        String photoPrivacy = event.get("photoPrivacy") != null ? event.get("photoPrivacy").toString() : null;
-        String lastSeenPrivacy = event.get("lastSeenPrivacy") != null ? event.get("lastSeenPrivacy").toString() : null;
+        String userId = event.getUserId();
+        String photoPrivacy = event.getPhotoPrivacy();
+        String lastSeenPrivacy = event.getLastSeenPrivacy();
+        List<String> eligibleContacts = event.getEligibleContactIds();
         
-        if (userId == null || action == null) {
-            log.warn("[PRIVACY-SERVICE] ⚠️ Missing critical fields in privacy event: userId={}, action={}", userId, action);
+        if (userId == null) {
+            log.warn("[PRIVACY-SERVICE] ⚠️ Missing userId in privacy event");
             return;
         }
 
-        log.info("[PRIVACY-SERVICE] 📊 Event Details: userId={}, action={}, photoPrivacy={}, lastSeenPrivacy={}",
-                userId, action, photoPrivacy, lastSeenPrivacy);
+        log.info("[PRIVACY-SERVICE] 📊 Event Details: userId={}, photoPrivacy={}, lastSeenPrivacy={}",
+                userId, photoPrivacy, lastSeenPrivacy);
 
-        @SuppressWarnings("unchecked")
-        List<String> eligibleContacts = (List<String>) event.get("elegibleContacts");
         if (eligibleContacts == null || eligibleContacts.isEmpty()) {
             log.info("[PRIVACY-SERVICE] ℹ️ No eligible contacts for privacy change notification");
             return;
@@ -63,6 +62,7 @@ public class PrivacyVisibilityChangeServiceImpl implements PrivacyVisibilityChan
 
         int successCount = 0;
         int failureCount = 0;
+        String action = determineAction(event);
 
         for (String contactId : eligibleContacts) {
             try {
@@ -76,7 +76,7 @@ public class PrivacyVisibilityChangeServiceImpl implements PrivacyVisibilityChan
                 Map<String, String> fcmData = buildFcmDataMap(userId, action, photoPrivacy, lastSeenPrivacy);
                 String messageId = fcmUtil.sendDataOnlyPushNotification(fcmToken, fcmData, true);
                 
-                log.info("[PRIVACY-SERVICE] ✅ Privacy change FCM sent. MessageId={}, contactId={}, action={}",
+                log.info("[PRIVACY-SERVICE] ✅ Privacy change FCM sent. MessageId={}, contactId={}, action=",
                         messageId, contactId, action);
                 successCount++;
 
@@ -92,6 +92,45 @@ public class PrivacyVisibilityChangeServiceImpl implements PrivacyVisibilityChan
         if (successCount > 0) {
             log.info("[PRIVACY-SERVICE] ✨ Privacy notifications successfully sent to {} contacts", successCount);
         }
+    }
+
+    /**
+     * Determine action based on privacy levels.
+     * GRANTED = visibility increased, REVOKED = visibility decreased
+     */
+    private String determineAction(PrivacyVisibilityChangeEvent event) {
+        String oldPhoto = event.getOldPhotoPrivacy();
+        String newPhoto = event.getPhotoPrivacy();
+        
+        // If privacy became more open (from NOBODY or MY_CONTACTS to something more open)
+        boolean isPhotoGranted = isMoreOpen(oldPhoto, newPhoto);
+        
+        String oldLastSeen = event.getOldLastSeenPrivacy();
+        String newLastSeen = event.getLastSeenPrivacy();
+        boolean isLastSeenGranted = isMoreOpen(oldLastSeen, newLastSeen);
+        
+        // If either attribute became more open, consider it GRANTED
+        if (isPhotoGranted || isLastSeenGranted) {
+            return "GRANTED";
+        }
+        // Otherwise, visibility was restricted
+        return "REVOKED";
+    }
+    
+    /**
+     * Check if newLevel is more open than oldLevel
+     */
+    private boolean isMoreOpen(String oldLevel, String newLevel) {
+        if (oldLevel == null || newLevel == null) return false;
+        
+        // NOBODY is most restrictive, MY_CONTACTS is middle, EVERYONE is most open
+        if (oldLevel.equals("NOBODY")) {
+            return !newLevel.equals("NOBODY"); // Moved to something more open
+        }
+        if (oldLevel.equals("MY_CONTACTS")) {
+            return newLevel.equals("EVERYONE"); // Moved to most open
+        }
+        return false; // EVERYONE is already most open
     }
 
     /**
