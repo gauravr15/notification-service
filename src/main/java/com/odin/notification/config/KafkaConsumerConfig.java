@@ -61,6 +61,11 @@ public class KafkaConsumerConfig {
      * Consumer factory specifically for PrivacyVisibilityChangeEvent deserialization.
      * This separate factory ensures privacy change events are properly deserialized
      * instead of being converted to NotificationDTO.
+     * 
+     * Configuration:
+     * - useTypeHeaders=false: Disable Jackson type info (profile-service uses com.odin.profileservice.dto.* 
+     *   but notification-service has com.odin.notification.dto.* - both are identical structures)
+     * - Explicitly set VALUE_DEFAULT_TYPE to notification-service's PrivacyVisibilityChangeEvent
      */
     @Bean
     public ConsumerFactory<String, PrivacyVisibilityChangeEvent> privacyVisibilityChangeConsumerFactory() {
@@ -69,6 +74,11 @@ public class KafkaConsumerConfig {
         props.put(ConsumerConfig.GROUP_ID_CONFIG, groupId);
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, JsonDeserializer.class);
+        
+        // CRITICAL: Disable type headers to avoid cross-service class resolution
+        // Profile-service publishes with com.odin.profileservice.dto.PrivacyVisibilityChangeEvent
+        // Notification-service needs to deserialize as com.odin.notification.dto.PrivacyVisibilityChangeEvent
+        props.put(JsonDeserializer.USE_TYPE_INFO_HEADERS, false);
         props.put(JsonDeserializer.VALUE_DEFAULT_TYPE, PrivacyVisibilityChangeEvent.class.getName());
         props.put(JsonDeserializer.TRUSTED_PACKAGES, trustedPackages);
         return new DefaultKafkaConsumerFactory<>(props);
