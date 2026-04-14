@@ -3,8 +3,14 @@ package com.odin.notification.service.impl;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
+
+import com.google.firebase.messaging.FirebaseMessagingException;
+import com.google.firebase.messaging.MessagingErrorCode;
 
 import com.odin.notification.constants.ApplicationConstants;
 import com.odin.notification.dto.NotificationDTO;
@@ -18,7 +24,12 @@ import lombok.extern.slf4j.Slf4j;
 
 /**
  * Status Update Notification Service Implementation
- * Handles the business logic for processing and sending status update push notifications
+ * Handles the business logic for processing and sending status update push notifications.
+ *
+ * Now includes:
+ *   - Configurable FCM retry with exponential backoff (mirrors PushNotificationServiceImpl)
+ *   - Kafka fallback on terminal FCM failure → status-fcm-failure-undelivered topic
+ *   - Token-missing fallback → publish to Kafka so status metadata is stored in Redis
  */
 @Slf4j
 @Service
@@ -26,10 +37,45 @@ public class StatusUpdateServiceImpl implements StatusUpdateService {
 
     private final FcmUtil fcmUtil;
     private final NotificationTokenRepository notificationTokenRepository;
+    private final KafkaTemplate<String, NotificationDTO> kafkaTemplate;
 
-    public StatusUpdateServiceImpl(FcmUtil fcmUtil, NotificationTokenRepository notificationTokenRepository) {
+    // Non-retryable FCM error codes — retrying these would never succeed
+    private static final Set<MessagingErrorCode> NON_RETRYABLE_ERRORS = Set.of(
+            MessagingErrorCode.INVALID_ARGUMENT,
+            MessagingErrorCode.UNREGISTERED,
+            MessagingErrorCode.SENDER_ID_MISMATCH,
+            MessagingErrorCode.THIRD_PARTY_AUTH_ERROR
+    );
+
+    // ===== Status FCM Retry Configuration (new property added) =====
+    @Value("${status.fcm.retry.enabled:true}")
+    private boolean statusFcmRetryEnabled;
+
+    @Value("${status.fcm.retry.max.attempts:3}")
+    private int statusFcmRetryMaxAttempts;
+
+    @Value("${status.fcm.retry.initial.backoff.ms:1000}")
+    private long statusFcmRetryInitialBackoffMs;
+
+    @Value("${status.fcm.retry.backoff.multiplier:2.0}")
+    private double statusFcmRetryBackoffMultiplier;
+
+    @Value("${status.fcm.retry.max.backoff.ms:30000}")
+    private long statusFcmRetryMaxBackoffMs;
+
+    // ===== Status FCM Failure Kafka Fallback (new property added) =====
+    @Value("${status.fcm.failure.kafka.topic:status-fcm-failure-undelivered}")
+    private String statusFcmFailureKafkaTopic;
+
+    @Value("${status.fcm.failure.kafka.publish.enabled:true}")
+    private boolean statusFcmFailureKafkaPublishEnabled;
+
+    public StatusUpdateServiceImpl(FcmUtil fcmUtil,
+                                   NotificationTokenRepository notificationTokenRepository,
+                                   KafkaTemplate<String, NotificationDTO> kafkaTemplate) {
         this.fcmUtil = fcmUtil;
         this.notificationTokenRepository = notificationTokenRepository;
+        this.kafkaTemplate = kafkaTemplate;
     }
 
     @Override
@@ -130,19 +176,29 @@ public class StatusUpdateServiceImpl implements StatusUpdateService {
     }
 
     /**
-     * Send status update push notification via FCM
-     * 
+     * Send status update push notification via FCM with retry and Kafka fallback.
+     *
+     * Flow:
+     * 1. Fetch FCM token from DB
+     * 2. If token missing → publish to Kafka fallback (token-missing path)
+     * 3. Attempt FCM send with configurable retry + exponential backoff
+     * 4. On terminal failure → publish to Kafka fallback topic
+     *
      * @param notificationDTO The status update data
      */
     private void sendStatusUpdateNotification(NotificationDTO notificationDTO) {
-        log.debug("Preparing to send status update notification for customerId: {}",
+        log.info("[STATUS-FCM] Preparing to send status notification for customerId={}",
                 notificationDTO.getCustomerId());
 
         // Fetch FCM token from database based on customerId
         String fcmToken = fetchFcmTokenFromDatabase(notificationDTO.getCustomerId());
 
+        // ── Token-missing fallback (Phase 6) ──
         if (fcmToken == null || fcmToken.isEmpty()) {
-            log.error(ApplicationConstants.LOG_FCM_TOKEN_NOT_FOUND, notificationDTO.getCustomerId());
+            log.warn("[STATUS-FCM] FCM token not found for customerId={}. " +
+                    "Publishing to Kafka fallback so status metadata is stored in Redis.",
+                    notificationDTO.getCustomerId());
+            publishStatusToFcmFailureTopic(notificationDTO, "TOKEN_MISSING");
             return;
         }
 
@@ -156,26 +212,141 @@ public class StatusUpdateServiceImpl implements StatusUpdateService {
         int fileCount = fileIds != null ? fileIds.split(",").length : 0;
 
         log.info(ApplicationConstants.LOG_SENDING_STATUS_UPDATE_NOTIFICATION,
-                fcmToken,
-                fileCount);
+                fcmToken, fileCount);
 
         // Build data map for FCM
         Map<String, String> fcmDataMap = buildStatusUpdateDataMap(notificationDTO);
 
-        // Send data-only notification (no notification object) for status updates
-        // This allows the frontend to process it in the background even when locked.
-        // For status updates, we use isSilent = true to set 'background' type for APNs
-        try {
-            String messageId = fcmUtil.sendDataOnlyPushNotification(
-                    fcmToken,
-                    fcmDataMap,
-                    true
-            );
+        // ── Attempt FCM send with retry or single-shot ──
+        if (statusFcmRetryEnabled) {
+            sendStatusWithRetry(notificationDTO, fcmToken, fcmDataMap);
+        } else {
+            sendStatusOnce(notificationDTO, fcmToken, fcmDataMap);
+        }
+    }
 
-            log.info(ApplicationConstants.LOG_STATUS_UPDATE_SENT_SUCCESSFULLY, messageId);
+    /**
+     * Send status FCM with configurable retry and exponential backoff.
+     * On terminal failure (retries exhausted or non-retryable error), publishes to Kafka fallback topic.
+     */
+    private void sendStatusWithRetry(NotificationDTO notificationDTO, String fcmToken,
+                                     Map<String, String> fcmDataMap) {
+        long backoffMs = statusFcmRetryInitialBackoffMs;
+
+        for (int attempt = 1; attempt <= statusFcmRetryMaxAttempts; attempt++) {
+            try {
+                String messageId = fcmUtil.sendDataOnlyPushNotification(fcmToken, fcmDataMap, true);
+                log.info("[STATUS-FCM-RETRY] Push sent successfully for customerId={}, attempt={}/{}, messageId={}",
+                        notificationDTO.getCustomerId(), attempt, statusFcmRetryMaxAttempts, messageId);
+                return; // Success — exit
+
+            } catch (FirebaseMessagingException e) {
+                MessagingErrorCode errorCode = e.getMessagingErrorCode();
+                log.warn("[STATUS-FCM-RETRY] Attempt {}/{} failed for customerId={}, errorCode={}, message={}",
+                        attempt, statusFcmRetryMaxAttempts, notificationDTO.getCustomerId(),
+                        errorCode, e.getMessage());
+
+                // Non-retryable errors — don't waste time retrying
+                if (errorCode != null && NON_RETRYABLE_ERRORS.contains(errorCode)) {
+                    log.error("[STATUS-FCM-RETRY] Non-retryable error {} for customerId={}, publishing to fallback",
+                            errorCode, notificationDTO.getCustomerId());
+                    publishStatusToFcmFailureTopic(notificationDTO,
+                            "NON_RETRYABLE:" + errorCode.name());
+                    return;
+                }
+
+                // Last attempt — publish to fallback
+                if (attempt == statusFcmRetryMaxAttempts) {
+                    log.error("[STATUS-FCM-RETRY] All {} attempts exhausted for customerId={}, publishing to fallback",
+                            statusFcmRetryMaxAttempts, notificationDTO.getCustomerId());
+                    publishStatusToFcmFailureTopic(notificationDTO,
+                            "RETRIES_EXHAUSTED:" + (errorCode != null ? errorCode.name() : "UNKNOWN"));
+                    return;
+                }
+
+                // Backoff before next attempt
+                sleep(backoffMs);
+                backoffMs = Math.min((long) (backoffMs * statusFcmRetryBackoffMultiplier),
+                        statusFcmRetryMaxBackoffMs);
+
+            } catch (Exception e) {
+                log.error("[STATUS-FCM-RETRY] Unexpected error on attempt {}/{} for customerId={}: {}",
+                        attempt, statusFcmRetryMaxAttempts, notificationDTO.getCustomerId(),
+                        e.getMessage(), e);
+
+                if (attempt == statusFcmRetryMaxAttempts) {
+                    publishStatusToFcmFailureTopic(notificationDTO, "UNEXPECTED_ERROR");
+                    return;
+                }
+
+                sleep(backoffMs);
+                backoffMs = Math.min((long) (backoffMs * statusFcmRetryBackoffMultiplier),
+                        statusFcmRetryMaxBackoffMs);
+            }
+        }
+    }
+
+    /**
+     * Single status FCM attempt (retry disabled). On failure, publishes to Kafka fallback topic.
+     */
+    private void sendStatusOnce(NotificationDTO notificationDTO, String fcmToken,
+                                Map<String, String> fcmDataMap) {
+        try {
+            String messageId = fcmUtil.sendDataOnlyPushNotification(fcmToken, fcmDataMap, true);
+            log.info("[STATUS-FCM] Status notification sent successfully for customerId={}, messageId={}",
+                    notificationDTO.getCustomerId(), messageId);
+        } catch (FirebaseMessagingException e) {
+            log.error("[STATUS-FCM] Failed to send status notification for customerId={}, error={}",
+                    notificationDTO.getCustomerId(), e.getMessage(), e);
+            publishStatusToFcmFailureTopic(notificationDTO,
+                    "FCM_ERROR:" + (e.getMessagingErrorCode() != null ? e.getMessagingErrorCode().name() : "UNKNOWN"));
         } catch (Exception e) {
-            log.error(ApplicationConstants.LOG_STATUS_UPDATE_FAILED,
-                    notificationDTO.getCustomerId(), e);
+            log.error("[STATUS-FCM] Unexpected error sending status notification for customerId={}: {}",
+                    notificationDTO.getCustomerId(), e.getMessage(), e);
+            publishStatusToFcmFailureTopic(notificationDTO, "UNEXPECTED_ERROR");
+        }
+    }
+
+    /**
+     * Publish the original NotificationDTO to the status FCM failure Kafka topic.
+     * The web-socket-service FcmFailureStatusConsumer will pick this up and store
+     * status metadata in Redis as STATUS:UNDELIVERED:{receiverId}, ensuring the
+     * Flutter client gets it on next reconnect.
+     */
+    private void publishStatusToFcmFailureTopic(NotificationDTO notificationDTO, String failureReason) {
+        if (!statusFcmFailureKafkaPublishEnabled) {
+            log.info("[STATUS-FCM-FALLBACK] Kafka publish disabled, skipping for customerId={}",
+                    notificationDTO.getCustomerId());
+            return;
+        }
+
+        try {
+            // Add failure metadata and timestamp so the consumer can build StatusNotificationMetadata
+            if (notificationDTO.getMap() != null) {
+                notificationDTO.getMap().put("fcmFailureReason", failureReason);
+                // Ensure timestamp is present for Redis hash field generation
+                notificationDTO.getMap().putIfAbsent("timestamp",
+                        String.valueOf(System.currentTimeMillis()));
+            }
+
+            String kafkaKey = "status-fcm-failure:" + notificationDTO.getCustomerId();
+            kafkaTemplate.send(statusFcmFailureKafkaTopic, kafkaKey, notificationDTO);
+
+            log.info("[STATUS-FCM-FALLBACK] Published to topic={} for customerId={}, reason={}",
+                    statusFcmFailureKafkaTopic, notificationDTO.getCustomerId(), failureReason);
+        } catch (Exception e) {
+            log.error("[STATUS-FCM-FALLBACK-CRITICAL] Failed to publish to Kafka for customerId={}, " +
+                            "reason={}: {}. Status notification is LOST.",
+                    notificationDTO.getCustomerId(), failureReason, e.getMessage(), e);
+        }
+    }
+
+    private void sleep(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            log.warn("[STATUS-FCM-RETRY] Retry sleep interrupted");
         }
     }
 
