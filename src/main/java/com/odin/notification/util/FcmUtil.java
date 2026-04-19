@@ -9,6 +9,7 @@ import com.google.firebase.messaging.AndroidConfig;
 import com.google.firebase.messaging.AndroidNotification;
 import com.google.firebase.messaging.ApnsConfig;
 import com.google.firebase.messaging.Aps;
+import com.google.firebase.messaging.ApsAlert;
 import com.google.firebase.messaging.FirebaseMessaging;
 import com.google.firebase.messaging.FirebaseMessagingException;
 import com.google.firebase.messaging.Message;
@@ -186,15 +187,37 @@ public class FcmUtil {
                 .build();
 
         // Build APNS-specific configuration
-        // isSilent = false (MESSAGE): alert type, priority 10, content-available 1
+        // isSilent = false (MESSAGE): alert type, priority 10, content-available 1, with alert body for iOS
         // isSilent = true (STATUS_UPDATE): background type, priority 5, content-available 1
-        ApnsConfig apnsConfig = ApnsConfig.builder()
-                .putHeader("apns-push-type", isSilent ? "background" : "alert")
-                .putHeader("apns-priority", isSilent ? "5" : "10")
-                .setAps(Aps.builder()
-                        .setContentAvailable(true)
-                        .build())
-                .build();
+        ApnsConfig apnsConfig;
+        if (isSilent) {
+            apnsConfig = ApnsConfig.builder()
+                    .putHeader("apns-push-type", "background")
+                    .putHeader("apns-priority", "5")
+                    .setAps(Aps.builder()
+                            .setContentAvailable(true)
+                            .build())
+                    .build();
+        } else {
+            // For non-silent messages, include an APNs alert so iOS displays
+            // the notification natively when the app is backgrounded or killed.
+            // NOTE: Do NOT set contentAvailable(true) here — Apple may demote
+            // alert notifications to silent background updates when it is present,
+            // causing iOS to suppress the visible banner entirely.
+            String alertTitle = dataMap.getOrDefault("title", "New Message");
+            String alertBody = dataMap.getOrDefault("body", "You have a new message");
+            apnsConfig = ApnsConfig.builder()
+                    .putHeader("apns-push-type", "alert")
+                    .putHeader("apns-priority", "10")
+                    .setAps(Aps.builder()
+                            .setAlert(ApsAlert.builder()
+                                    .setTitle(alertTitle)
+                                    .setBody(alertBody)
+                                    .build())
+                            .setSound("default")
+                            .build())
+                    .build();
+        }
 
         Map<String, String> sanitizedData = sanitizeReservedKeys(dataMap);
 
