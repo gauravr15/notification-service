@@ -187,8 +187,9 @@ public class FcmUtil {
                 .build();
 
         // Build APNS-specific configuration
-        // isSilent = false (MESSAGE): alert type, priority 10, content-available 1, with alert body for iOS
-        // isSilent = true (STATUS_UPDATE): background type, priority 5, content-available 1
+        // isSilent = false (MESSAGE): background type, priority 10, content-available 1 only — no aps.alert
+        //   iOS silently wakes Flutter handler → Flutter shows ONE rich local notification after E2EE decrypt
+        // isSilent = true (STATUS_UPDATE): background type, priority 5, content-available 1 only
         ApnsConfig apnsConfig;
         if (isSilent) {
             apnsConfig = ApnsConfig.builder()
@@ -199,37 +200,34 @@ public class FcmUtil {
                             .build())
                     .build();
         } else {
-            // For non-silent messages (chat), include an APNs alert with content-available:1
-            // so iOS delivers the message as a visible alert AND wakes the Flutter background
-            // handler to trigger E2EE decryption and local notification display.
+            // For non-silent chat messages:
             //
-            // Per iOS/APNs spec:
-            // - content-available:1 enables didReceiveRemoteNotification:fetchCompletionHandler:
-            // - apns-push-type:alert shows a user-visible banner
-            // - sound:default provides audio feedback
+            // WHY NO aps.alert:
+            // iOS renders aps.alert as a native system banner BEFORE calling the Flutter background
+            // handler. AppDelegate.willPresent can suppress this in foreground (via completionHandler([]))
+            // but has NO control when the app is backgrounded or the device is locked — iOS shows the
+            // native banner unconditionally. This caused a DOUBLE notification:
+            //   1. Native APNs banner ("New Message / You have a new message") from aps.alert
+            //   2. Flutter local notification (rich content) from _fln.show() after E2EE decryption
             //
-            // CRITICAL FIX: Without content-available:1, iOS treats the push as display-only
-            // and never calls the background handler. Flutter code never runs, no E2EE decryption,
-            // no local notification. This is why messages were lost entirely on iOS.
+            // FIX: Remove aps.alert + sound entirely. Use background push-type + content-available:1
+            // so iOS silently wakes the Flutter background handler (didReceiveRemoteNotification:),
+            // which then shows exactly ONE rich local notification via FlutterLocalNotificationsPlugin.
             //
-            // Risk: Apple may demote alert+content-available to silent behavior (tested in dev).
-            // Solution: Monitor logs for banner suppression; fall back to silent if needed.
-            String alertTitle = dataMap.getOrDefault("title", "New Message");
-            String alertBody = dataMap.getOrDefault("body", "You have a new message");
+            // WHY apns-priority:10 with background type:
+            // Priority 10 ensures high-priority delivery even for background pushes; Apple allows
+            // this but may throttle on low-battery devices. Acceptable trade-off vs. double banners.
+            //
+            // ANDROID IMPACT: Zero. This entire block is inside ApnsConfig which FCM routes to iOS
+            // only. AndroidConfig (above) is unchanged and uses its own HIGH priority path.
             apnsConfig = ApnsConfig.builder()
-                    .putHeader("apns-push-type", "alert")
+                    .putHeader("apns-push-type", "background")
                     .putHeader("apns-priority", "10")
                     .setAps(Aps.builder()
-                            .setContentAvailable(true)  // ← FIX #1: Enable iOS background handler wakeup (97% confidence)
-                            .setAlert(ApsAlert.builder()
-                                    .setTitle(alertTitle)
-                                    .setBody(alertBody)
-                                    .build())
-                            .setSound("default")
+                            .setContentAvailable(true)  // Wakes Flutter background handler (97% confidence fix)
                             .build())
                     .build();
-            log.info("[APNs-AlertWithContentAvailable] title={}, body={}, contentAvailable=true (iOS background handler enabled)", 
-                    alertTitle, alertBody);
+            log.info("[APNs-BackgroundWakeup] contentAvailable=true, no aps.alert (single Flutter local notification will display rich content)");
         }
 
         Map<String, String> sanitizedData = sanitizeReservedKeys(dataMap);
