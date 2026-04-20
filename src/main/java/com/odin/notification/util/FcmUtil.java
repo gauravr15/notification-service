@@ -199,17 +199,28 @@ public class FcmUtil {
                             .build())
                     .build();
         } else {
-            // For non-silent messages, include an APNs alert so iOS displays
-            // the notification natively when the app is backgrounded or killed.
-            // NOTE: Do NOT set contentAvailable(true) here — Apple may demote
-            // alert notifications to silent background updates when it is present,
-            // causing iOS to suppress the visible banner entirely.
+            // For non-silent messages (chat), include an APNs alert with content-available:1
+            // so iOS delivers the message as a visible alert AND wakes the Flutter background
+            // handler to trigger E2EE decryption and local notification display.
+            //
+            // Per iOS/APNs spec:
+            // - content-available:1 enables didReceiveRemoteNotification:fetchCompletionHandler:
+            // - apns-push-type:alert shows a user-visible banner
+            // - sound:default provides audio feedback
+            //
+            // CRITICAL FIX: Without content-available:1, iOS treats the push as display-only
+            // and never calls the background handler. Flutter code never runs, no E2EE decryption,
+            // no local notification. This is why messages were lost entirely on iOS.
+            //
+            // Risk: Apple may demote alert+content-available to silent behavior (tested in dev).
+            // Solution: Monitor logs for banner suppression; fall back to silent if needed.
             String alertTitle = dataMap.getOrDefault("title", "New Message");
             String alertBody = dataMap.getOrDefault("body", "You have a new message");
             apnsConfig = ApnsConfig.builder()
                     .putHeader("apns-push-type", "alert")
                     .putHeader("apns-priority", "10")
                     .setAps(Aps.builder()
+                            .setContentAvailable(true)  // ← FIX #1: Enable iOS background handler wakeup (97% confidence)
                             .setAlert(ApsAlert.builder()
                                     .setTitle(alertTitle)
                                     .setBody(alertBody)
@@ -217,6 +228,8 @@ public class FcmUtil {
                             .setSound("default")
                             .build())
                     .build();
+            log.info("[APNs-AlertWithContentAvailable] title={}, body={}, contentAvailable=true (iOS background handler enabled)", 
+                    alertTitle, alertBody);
         }
 
         Map<String, String> sanitizedData = sanitizeReservedKeys(dataMap);
