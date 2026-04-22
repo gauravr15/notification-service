@@ -164,11 +164,21 @@ public class PushNotificationServiceImpl implements PushNotificationService {
             // Extract message from map
             String message = extractMessageFromMap(notificationDTO.getMap());
 
-            // If it's not encrypted, we require a message. If it is encrypted, message can be empty.
-            if (!notificationDTO.isEncrypted() && (message == null || message.isEmpty())) {
+            // Determine whether this is a CALL_INVITE — call notifications don't carry a body text.
+            String signalForCheck = notificationDTO.getMap() != null && notificationDTO.getMap().get("signal") != null
+                    ? String.valueOf(notificationDTO.getMap().get("signal"))
+                    : null;
+            boolean isCallInviteNotif = CALL_INVITE_TYPE.equalsIgnoreCase(signalForCheck);
+            // If it's not encrypted AND not a CALL_INVITE, we require a message body.
+            // CALL_INVITE pushes carry no body text — they are routed to APNs VoIP or FCM data-only.
+            if (!notificationDTO.isEncrypted() && !isCallInviteNotif && (message == null || message.isEmpty())) {
                 log.warn("No message found in notification map for non-encrypted message, customerId: {}",
                         notificationDTO.getCustomerId());
                 return;
+            }
+            if (isCallInviteNotif) {
+                log.info("[CALL_INVITE] Bypassing message body requirement for CALL_INVITE notification, customerId={}",
+                        notificationDTO.getCustomerId());
             }
 
             // Send push notification
@@ -229,6 +239,64 @@ public class PushNotificationServiceImpl implements PushNotificationService {
     private void sendPushNotification(NotificationDTO notificationDTO, String message) {
         log.debug("Preparing to send push notification for customerId: {}",
                 notificationDTO.getCustomerId());
+
+        // ── Phase 3: iOS VoIP push path for CALL_INVITE ──────────────────────
+        // Decision tree for CALL_INVITE:
+        //   1. customerId null              → skip VoIP block entirely (NPE guard)
+        //   2. signal != CALL_INVITE        → skip VoIP block (all non-call notifications)
+        //   3. signal == CALL_INVITE AND no voipToken row (Android, new iOS) → fall through to FCM ✅
+        //   4. signal == CALL_INVITE AND voipToken present (registered iOS)  → APNs VoIP push, return ✅
+        //
+        // Android devices NEVER have a voipToken row because _registerVoipToken() is
+        // only called from the iOS PKPushRegistryDelegate (PushKit is iOS-only).
+        // Therefore Android always lands on case 3 and takes the original FCM path unchanged.
+        String signalField = (notificationDTO.getMap() != null && notificationDTO.getMap().get("signal") != null)
+                ? String.valueOf(notificationDTO.getMap().get("signal"))
+                : null;
+
+        if (CALL_INVITE_TYPE.equalsIgnoreCase(signalField) && notificationDTO.getCustomerId() != null) {
+            // Safe DB lookup — customerId non-null is guaranteed by the guard above
+            Optional<NotificationToken> tokenRecord =
+                    notificationTokenRepository.findFirstByCustomerId(notificationDTO.getCustomerId());
+
+            String voipToken = tokenRecord.isPresent() ? tokenRecord.get().getVoipToken() : null;
+            String deviceType = (tokenRecord.isPresent() && tokenRecord.get().getDeviceType() != null)
+                    ? tokenRecord.get().getDeviceType()
+                    : null;
+
+            log.info("[VoIP-APNs] CALL_INVITE routing — customerId={} deviceType={} hasVoipToken={}",
+                    notificationDTO.getCustomerId(), deviceType, voipToken != null && !voipToken.isBlank());
+
+            // Double guard: if device_type is explicitly ANDROID, never route to APNs
+            // even if a stale voipToken row exists (defensive — save() already clears it).
+            if ("ANDROID".equalsIgnoreCase(deviceType)) {
+                log.info("[VoIP-APNs] CALL_INVITE — device_type=ANDROID, skipping APNs and using FCM for customerId={}",
+                        notificationDTO.getCustomerId());
+                voipToken = null;
+            }
+
+            if (voipToken != null && !voipToken.isBlank()) {
+                // ── iOS device with PushKit token registered → APNs VoIP push ──
+                log.info("[VoIP-APNs] CALL_INVITE — iOS device with voipToken found for customerId={}, routing to APNs (bypassing FCM)",
+                        notificationDTO.getCustomerId());
+                Map<String, String> fcmDataMap = buildFcmDataMap(notificationDTO);
+                if (fcmDataMap != null) {
+                    int apnsStatus = fcmUtil.sendVoipApnsPush(voipToken, fcmDataMap);
+                    log.info("[VoIP-APNs] APNs result: status={} customerId={}",
+                            apnsStatus, notificationDTO.getCustomerId());
+                } else {
+                    log.warn("[VoIP-APNs] buildFcmDataMap returned null for customerId={}, skipping VoIP push",
+                            notificationDTO.getCustomerId());
+                }
+                return; // iOS with voipToken — do not fall through to FCM
+            } else {
+                // ── Android device OR new iOS device without voipToken yet ──
+                // Fall through to the standard FCM path below (unchanged behaviour).
+                log.debug("[VoIP-APNs] CALL_INVITE — no voipToken for customerId={} (Android or pre-registration iOS), using FCM",
+                        notificationDTO.getCustomerId());
+            }
+        }
+        // ─────────────────────────────────────────────────────────────────────
 
         // Fetch FCM token from database based on customerId
         String fcmToken = fetchFcmTokenFromDatabase(notificationDTO.getCustomerId());

@@ -1,10 +1,23 @@
 package com.odin.notification.util;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.security.KeyFactory;
+import java.security.PrivateKey;
+import java.security.spec.PKCS8EncodedKeySpec;
+import java.util.Base64;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.firebase.messaging.AndroidConfig;
 import com.google.firebase.messaging.AndroidNotification;
 import com.google.firebase.messaging.ApnsConfig;
@@ -16,6 +29,8 @@ import com.google.firebase.messaging.Message;
 import com.google.firebase.messaging.Notification;
 import com.odin.notification.constants.ApplicationConstants;
 
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.SignatureAlgorithm;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -27,6 +42,35 @@ import lombok.extern.slf4j.Slf4j;
 public class FcmUtil {
 
     private final FirebaseMessaging firebaseMessaging;
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    // ── APNs VoIP push configuration ──────────────────────────────────────────
+    // Set these via application.properties or config server.
+    // apns.key.path  — absolute path to the .p8 AuthKey file from Apple Developer portal
+    // apns.key.id    — 10-character Key ID shown in Apple Developer portal
+    // apns.team.id   — 10-character Team ID from Apple Developer portal
+    // apns.bundle.id — iOS app bundle identifier (e.g. com.odin.messenger)
+    // apns.production — true for production APNs, false for sandbox
+
+    @Value("${apns.key.path:}")
+    private String apnsKeyPath;
+
+    @Value("${apns.key.id:}")
+    private String apnsKeyId;
+
+    @Value("${apns.team.id:}")
+    private String apnsTeamId;
+
+    @Value("${apns.bundle.id:com.odin.messenger}")
+    private String apnsBundleId;
+
+    @Value("${apns.production:false}")
+    private boolean apnsProduction;
+
+    // APNs JWT is valid for up to 1 hour; cache to avoid signing on every call.
+    private volatile String cachedApnsJwt = null;
+    private volatile long apnsJwtIssuedAtSeconds = 0;
+    private volatile PrivateKey apnsPrivateKey = null;
 
     public FcmUtil(FirebaseMessaging firebaseMessaging) {
         this.firebaseMessaging = firebaseMessaging;
@@ -321,5 +365,140 @@ public class FcmUtil {
         }
 
         return true;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // APNs VoIP Push (Phase 3 — iOS CallKit wake-from-killed)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Sends an APNs VoIP push directly to Apple's servers using HTTP/2.
+     * This bypasses FCM entirely and wakes the iOS app even when killed, which
+     * is required for CallKit to show the native incoming-call UI on lock screen.
+     *
+     * <p>Apple rules enforced here:
+     * <ul>
+     *   <li>{@code apns-push-type: voip} — required for PushKit delivery</li>
+     *   <li>{@code apns-topic: {bundleId}.voip} — the VoIP topic suffix is mandatory</li>
+     *   <li>{@code apns-priority: 10} — VoIP pushes must be high-priority</li>
+     *   <li>APNs JWT signed with ES256, cached for up to 50 minutes (Apple allow 60 max)</li>
+     * </ul>
+     *
+     * @param voipToken   PushKit VoIP APNs token (hex string, registered by Flutter app)
+     * @param callPayload call fields to forward (sessionId, callerName, callType, etc.)
+     * @return HTTP status code from APNs (200 = success), or -1 on error
+     */
+    public int sendVoipApnsPush(String voipToken, Map<String, String> callPayload) {
+        if (!isApnsConfigured()) {
+            log.warn("[VoIP-APNs] SKIPPED — APNs not configured (apns.key.path/id/team.id missing). "
+                    + "Set these properties to enable iOS CallKit wake-from-killed.");
+            return -1;
+        }
+        if (voipToken == null || voipToken.isBlank()) {
+            log.warn("[VoIP-APNs] SKIPPED — voipToken is null or blank");
+            return -1;
+        }
+
+        try {
+            // Build JSON payload — all call fields are nested under the root dict.
+            // AppDelegate.didReceiveIncomingPushWith reads dictionaryPayload directly.
+            Map<String, Object> root = new HashMap<>();
+            if (callPayload != null) {
+                root.putAll(callPayload);
+            }
+            // Ensure mandatory fields present for AppDelegate CallKit routing
+            root.put("type", "CALL_INVITE");
+            String jsonBody = objectMapper.writeValueAsString(root);
+
+            // Build APNs JWT
+            String jwt = buildApnsJwt();
+
+            // APNs endpoint
+            String apnsHost = apnsProduction
+                    ? "https://api.push.apple.com"
+                    : "https://api.sandbox.push.apple.com";
+            String url = apnsHost + "/3/device/" + voipToken;
+
+            log.info("[VoIP-APNs] Sending VoIP push to APNs for voipToken={} (prod={}) payload={}",
+                    voipToken.substring(0, Math.min(8, voipToken.length())) + "...",
+                    apnsProduction, sanitizeDataMap(callPayload));
+
+            HttpClient httpClient = HttpClient.newBuilder()
+                    .version(HttpClient.Version.HTTP_2)
+                    .build();
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("content-type", "application/json")
+                    .header("apns-push-type", "voip")
+                    .header("apns-topic", apnsBundleId + ".voip")
+                    .header("apns-priority", "10")
+                    .header("authorization", "bearer " + jwt)
+                    .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            int status = response.statusCode();
+
+            if (status == 200) {
+                log.info("[VoIP-APNs] ✅ VoIP push delivered successfully — status=200");
+            } else {
+                log.error("[VoIP-APNs] ❌ VoIP push failed — status={} body={}", status, response.body());
+            }
+            return status;
+
+        } catch (Exception e) {
+            log.error("[VoIP-APNs] ❌ Exception sending VoIP push: {}", e.getMessage(), e);
+            return -1;
+        }
+    }
+
+    /**
+     * Returns true if all required APNs config properties are present.
+     */
+    private boolean isApnsConfigured() {
+        return apnsKeyPath != null && !apnsKeyPath.isBlank()
+                && apnsKeyId != null && !apnsKeyId.isBlank()
+                && apnsTeamId != null && !apnsTeamId.isBlank();
+    }
+
+    /**
+     * Builds and caches the APNs provider JWT (ES256, valid up to 50 minutes).
+     * Apple allows up to 60 min; we refresh at 50 min for a safety margin.
+     */
+    private synchronized String buildApnsJwt() throws Exception {
+        long nowSeconds = System.currentTimeMillis() / 1000;
+        // Refresh if no cached token or if it's older than 50 minutes
+        if (cachedApnsJwt == null || (nowSeconds - apnsJwtIssuedAtSeconds) > 3000) {
+            log.debug("[VoIP-APNs] Building new APNs JWT (teamId={}, keyId={})", apnsTeamId, apnsKeyId);
+            PrivateKey pk = loadApnsPrivateKey();
+            cachedApnsJwt = Jwts.builder()
+                    .setHeaderParam("kid", apnsKeyId)
+                    .setIssuer(apnsTeamId)
+                    .setIssuedAt(new Date(nowSeconds * 1000))
+                    .signWith(pk, SignatureAlgorithm.ES256)
+                    .compact();
+            apnsJwtIssuedAtSeconds = nowSeconds;
+            log.debug("[VoIP-APNs] APNs JWT built and cached — issuedAt={}", apnsJwtIssuedAtSeconds);
+        }
+        return cachedApnsJwt;
+    }
+
+    /**
+     * Loads and caches the ECDSA private key from the .p8 PEM file at {@code apnsKeyPath}.
+     */
+    private synchronized PrivateKey loadApnsPrivateKey() throws Exception {
+        if (apnsPrivateKey != null) return apnsPrivateKey;
+        byte[] keyFileBytes = Files.readAllBytes(Paths.get(apnsKeyPath));
+        String pem = new String(keyFileBytes)
+                .replace("-----BEGIN PRIVATE KEY-----", "")
+                .replace("-----END PRIVATE KEY-----", "")
+                .replaceAll("\\s+", "");
+        byte[] keyBytes = Base64.getDecoder().decode(pem);
+        PKCS8EncodedKeySpec keySpec = new PKCS8EncodedKeySpec(keyBytes);
+        KeyFactory keyFactory = KeyFactory.getInstance("EC");
+        apnsPrivateKey = keyFactory.generatePrivate(keySpec);
+        log.info("[VoIP-APNs] APNs P8 private key loaded from {}", apnsKeyPath);
+        return apnsPrivateKey;
     }
 }

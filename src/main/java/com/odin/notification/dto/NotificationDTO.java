@@ -65,6 +65,7 @@ public class NotificationDTO {
         if (map == null) return null;
         Object val = map.get("senderName");
         if (val == null) val = map.get("displayName");
+        if (val == null) val = map.get("callerName"); // fallback for CALL_INVITE payloads
         return val != null ? String.valueOf(val) : "New Message";
     }
 
