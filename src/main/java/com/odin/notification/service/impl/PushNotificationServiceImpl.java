@@ -284,11 +284,17 @@ public class PushNotificationServiceImpl implements PushNotificationService {
                     int apnsStatus = fcmUtil.sendVoipApnsPush(voipToken, fcmDataMap);
                     log.info("[VoIP-APNs] APNs result: status={} customerId={}",
                             apnsStatus, notificationDTO.getCustomerId());
+                    if (apnsStatus == 200) {
+                        return; // APNs VoIP push delivered successfully — skip FCM
+                    }
+                    // APNs push failed — fall through to FCM so the call is not silently dropped
+                    log.warn("[VoIP-APNs] ⚠️ APNs VoIP push failed (status={}) for customerId={} — falling back to FCM",
+                            apnsStatus, notificationDTO.getCustomerId());
                 } else {
-                    log.warn("[VoIP-APNs] buildFcmDataMap returned null for customerId={}, skipping VoIP push",
+                    log.warn("[VoIP-APNs] buildFcmDataMap returned null for customerId={}, falling back to FCM",
                             notificationDTO.getCustomerId());
                 }
-                return; // iOS with voipToken — do not fall through to FCM
+                // Fall through to standard FCM path below
             } else {
                 // ── Android device OR new iOS device without voipToken yet ──
                 // Fall through to the standard FCM path below (unchanged behaviour).
