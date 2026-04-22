@@ -489,7 +489,13 @@ public class FcmUtil {
      */
     private synchronized PrivateKey loadApnsPrivateKey() throws Exception {
         if (apnsPrivateKey != null) return apnsPrivateKey;
-        byte[] keyFileBytes = Files.readAllBytes(Paths.get(apnsKeyPath));
+        java.nio.file.Path keyPath = Paths.get(apnsKeyPath).toAbsolutePath();
+        log.info("[VoIP-APNs] Loading APNs P8 private key from absolute path: {}", keyPath);
+        if (!java.nio.file.Files.exists(keyPath)) {
+            log.error("[VoIP-APNs] ❌ P8 key file NOT FOUND at: {}. Check apns.key.path in application.properties.", keyPath);
+            throw new java.io.FileNotFoundException("APNs P8 key not found: " + keyPath);
+        }
+        byte[] keyFileBytes = Files.readAllBytes(keyPath);
         String pem = new String(keyFileBytes)
                 .replace("-----BEGIN PRIVATE KEY-----", "")
                 .replace("-----END PRIVATE KEY-----", "")
@@ -498,7 +504,7 @@ public class FcmUtil {
         PKCS8EncodedKeySpec keySpec = new PKCS8EncodedKeySpec(keyBytes);
         KeyFactory keyFactory = KeyFactory.getInstance("EC");
         apnsPrivateKey = keyFactory.generatePrivate(keySpec);
-        log.info("[VoIP-APNs] APNs P8 private key loaded from {}", apnsKeyPath);
+        log.info("[VoIP-APNs] ✅ APNs P8 private key loaded successfully from {}", keyPath);
         return apnsPrivateKey;
     }
 }

@@ -250,9 +250,19 @@ public class PushNotificationServiceImpl implements PushNotificationService {
         // Android devices NEVER have a voipToken row because _registerVoipToken() is
         // only called from the iOS PKPushRegistryDelegate (PushKit is iOS-only).
         // Therefore Android always lands on case 3 and takes the original FCM path unchanged.
-        String signalField = (notificationDTO.getMap() != null && notificationDTO.getMap().get("signal") != null)
-                ? String.valueOf(notificationDTO.getMap().get("signal"))
-                : null;
+        // Check both "signal" (WebSocket path) and "type" (Kafka/FCM payload path) for CALL_INVITE.
+        // Kafka consumer payloads use "type=CALL_INVITE" — "signal" is absent in that case.
+        String signalField = null;
+        if (notificationDTO.getMap() != null) {
+            Object sig = notificationDTO.getMap().get("signal");
+            Object typ = notificationDTO.getMap().get("type");
+            if (sig != null) {
+                signalField = String.valueOf(sig);
+            } else if (typ != null) {
+                signalField = String.valueOf(typ);
+            }
+        }
+        log.debug("[VoIP-APNs] signalField resolved as '{}' for customerId={}", signalField, notificationDTO.getCustomerId());
 
         if (CALL_INVITE_TYPE.equalsIgnoreCase(signalField) && notificationDTO.getCustomerId() != null) {
             // Safe DB lookup — customerId non-null is guaranteed by the guard above
