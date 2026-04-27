@@ -270,20 +270,9 @@ public class PushNotificationServiceImpl implements PushNotificationService {
                     notificationTokenRepository.findFirstByCustomerId(notificationDTO.getCustomerId());
 
             String voipToken = tokenRecord.isPresent() ? tokenRecord.get().getVoipToken() : null;
-            String deviceType = (tokenRecord.isPresent() && tokenRecord.get().getDeviceType() != null)
-                    ? tokenRecord.get().getDeviceType()
-                    : null;
 
-            log.info("[VoIP-APNs] CALL_INVITE routing — customerId={} deviceType={} hasVoipToken={}",
-                    notificationDTO.getCustomerId(), deviceType, voipToken != null && !voipToken.isBlank());
-
-            // Double guard: if device_type is explicitly ANDROID, never route to APNs
-            // even if a stale voipToken row exists (defensive — save() already clears it).
-            if ("ANDROID".equalsIgnoreCase(deviceType)) {
-                log.info("[VoIP-APNs] CALL_INVITE — device_type=ANDROID, skipping APNs and using FCM for customerId={}",
-                        notificationDTO.getCustomerId());
-                voipToken = null;
-            }
+                log.info("[VoIP-APNs] CALL_INVITE routing — customerId={} hasVoipToken={}",
+                    notificationDTO.getCustomerId(), voipToken != null && !voipToken.isBlank());
 
             if (voipToken != null && !voipToken.isBlank()) {
                 // ── iOS device with PushKit token registered → APNs VoIP push ──
