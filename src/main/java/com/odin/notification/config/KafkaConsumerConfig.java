@@ -16,6 +16,7 @@ import org.springframework.kafka.support.serializer.JsonDeserializer;
 
 import com.odin.notification.dto.NotificationDTO;
 import com.odin.notification.dto.PrivacyVisibilityChangeEvent;
+import com.odin.notification.dto.AccountDeletionEvent;
 
 
 @EnableKafka
@@ -94,6 +95,38 @@ public class KafkaConsumerConfig {
         ConcurrentKafkaListenerContainerFactory<String, PrivacyVisibilityChangeEvent> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(privacyVisibilityChangeConsumerFactory());
+        return factory;
+    }
+
+    /**
+     * Consumer factory for AccountDeletionEvent deserialization.
+     * Uses USE_TYPE_INFO_HEADERS=false to avoid cross-service class resolution.
+     * Profile-service publishes with com.odin.profileservice.dto.AccountDeletionEvent;
+     * this factory explicitly deserializes as notification-service's own DTO.
+     */
+    @Bean
+    public ConsumerFactory<String, AccountDeletionEvent> accountDeletionConsumerFactory() {
+        Map<String, Object> props = new HashMap<>();
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, groupId);
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, JsonDeserializer.class);
+        props.put(JsonDeserializer.USE_TYPE_INFO_HEADERS, false);
+        props.put(JsonDeserializer.VALUE_DEFAULT_TYPE, AccountDeletionEvent.class.getName());
+        props.put(JsonDeserializer.TRUSTED_PACKAGES, trustedPackages);
+        return new DefaultKafkaConsumerFactory<>(props);
+    }
+
+    /**
+     * Listener container factory for account deletion events.
+     * Must be explicitly referenced by @KafkaListener for the account.deletion topic.
+     */
+    @Bean("accountDeletionListenerFactory")
+    public ConcurrentKafkaListenerContainerFactory<String, AccountDeletionEvent>
+    accountDeletionListenerFactory() {
+        ConcurrentKafkaListenerContainerFactory<String, AccountDeletionEvent> factory =
+                new ConcurrentKafkaListenerContainerFactory<>();
+        factory.setConsumerFactory(accountDeletionConsumerFactory());
         return factory;
     }
 }

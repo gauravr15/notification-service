@@ -11,5 +11,7 @@ public interface NotificationTokenRepository extends JpaRepository<NotificationT
 	Optional<NotificationToken> findFirstByCustomerId(Long customerId);
 
 	Optional<NotificationToken> findFirstByCustomerIdAndDeviceSignature(Long customerId, String deviceSignature);
-	
+
+	void deleteByCustomerId(Long customerId);
+
 }

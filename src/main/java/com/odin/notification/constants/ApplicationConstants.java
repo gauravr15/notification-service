@@ -17,6 +17,7 @@ public class ApplicationConstants {
 	public static final String KAFKA_UNDELIVERED_NOTIFICATION_TOPIC = "undelivered.notification.message";
 	public static final String KAFKA_STATUS_UPDATE_NOTIFICATION_TOPIC = "status.update.notification.message";
 	public static final String KAFKA_PROFILE_PHOTO_UPDATE_TOPIC = "profile-image-updates";
+	public static final String KAFKA_ACCOUNT_DELETION_TOPIC = "account.deletion";
 
 	// ===== Notification Type/ID Constants =====
 	public static final Long NOTIFICATION_ID_DIRECT_MESSAGE = 1L;
