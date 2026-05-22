@@ -40,8 +40,9 @@ public class AccountDeletionConsumer {
             containerFactory = "accountDeletionListenerFactory"
     )
     public void onAccountDeleted(AccountDeletionEvent event) {
-        log.info("[ACCOUNT-DELETION] Received account deletion event for customerId={}",
-                event.getCustomerId());
+        log.info("[ACCOUNT-DELETION] Received account deletion event for customerId={} contactOwnerIds={}",
+                event.getCustomerId(),
+                event.getContactOwnerIds() != null ? event.getContactOwnerIds().size() + " owner(s)" : "null");
 
         if (event.getCustomerId() == null || event.getCustomerId().isBlank()) {
             log.warn("[ACCOUNT-DELETION] Ignoring event with missing customerId");

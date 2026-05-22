@@ -94,9 +94,15 @@ public class AccountDeletionNotificationServiceImpl implements AccountDeletionNo
                     continue;
                 }
 
-                fcmUtil.sendDataOnlyPushNotification(tokenOpt.get().getFcmToken(), fcmData, true);
+                String fcmToken = tokenOpt.get().getFcmToken();
+                String maskedToken = fcmToken.length() > 12
+                        ? fcmToken.substring(0, 6) + "..." + fcmToken.substring(fcmToken.length() - 6)
+                        : "***";
+                log.info("[ACCOUNT-DELETION] Sending FCM to ownerUserId={} token={} payload={}",
+                        ownerUserId, maskedToken, fcmData);
+                fcmUtil.sendDataOnlyPushNotification(fcmToken, fcmData, true);
                 successCount++;
-                log.debug("[ACCOUNT-DELETION] ACCOUNT_DELETED FCM sent to ownerUserId={}", ownerUserId);
+                log.info("[ACCOUNT-DELETION] FCM delivered successfully to ownerUserId={}", ownerUserId);
 
             } catch (NumberFormatException e) {
                 log.warn("[ACCOUNT-DELETION] Invalid ownerUserId format='{}', skipping", ownerUserId);
