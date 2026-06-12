@@ -221,7 +221,7 @@ public class PushNotificationServiceImpl implements PushNotificationService {
             return;
         }
 
-        boolean sent = fast2SmsOtpService.sendOtp(mobile, otp);
+        boolean sent = fast2SmsOtpService.sendOtp(mobile, otp, notificationDTO);
         if (sent) {
             log.info(ApplicationConstants.LOG_SMS_OTP_SENT_SUCCESS, mobile);
         } else {

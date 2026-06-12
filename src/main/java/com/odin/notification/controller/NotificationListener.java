@@ -37,7 +37,7 @@ public class NotificationListener {
                 return;
             }
 
-            boolean sent = fast2SmsOtpService.sendOtp(mobile, otp);
+            boolean sent = fast2SmsOtpService.sendOtp(mobile, otp, notification);
             if (sent) {
                 log.info(ApplicationConstants.LOG_SMS_OTP_SENT_SUCCESS, mobile);
             } else {

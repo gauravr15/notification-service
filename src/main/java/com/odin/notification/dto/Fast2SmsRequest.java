@@ -29,4 +29,9 @@ public class Fast2SmsRequest {
 
     @JsonProperty("schedule_time")
     private String scheduleTime;
+
+    private String authorization;
+    private String sender_id;
+    private String template_id; 
+    private String variables_values;
 }
