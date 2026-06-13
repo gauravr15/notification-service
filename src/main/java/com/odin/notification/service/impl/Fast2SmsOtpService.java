@@ -51,7 +51,7 @@ public class Fast2SmsOtpService {
 	public boolean sendOtp(String phoneNumber, String otp, NotificationDTO notification) {
 	    log.info("[SMS-OTP] Initiating DLT OTP SMS to number: {}", maskPhone(phoneNumber));
 
-	    if (!smsDeliveryEnabled) {
+	    if (!smsDeliveryEnabled || !phoneNumber.startsWith("91")) {
 	        log.info("[SMS-OTP] SMS delivery is DISABLED. Skipping: {}", maskPhone(phoneNumber));
 	        return true;
 	    }
